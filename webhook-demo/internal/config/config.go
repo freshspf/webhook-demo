@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Server ServerConfig
 	GitHub GitHubConfig
+	Claude ClaudeConfig
 }
 
 // ServerConfig 服务器配置
@@ -24,6 +25,13 @@ type GitHubConfig struct {
 	WebhookSecret string
 }
 
+// ClaudeConfig Claude API相关配置
+type ClaudeConfig struct {
+	APIKey    string
+	Model     string
+	MaxTokens int
+}
+
 // Load 加载配置
 func Load() *Config {
 	return &Config{
@@ -34,6 +42,11 @@ func Load() *Config {
 		GitHub: GitHubConfig{
 			Token:         getEnv("GITHUB_TOKEN", ""),
 			WebhookSecret: getEnv("GITHUB_WEBHOOK_SECRET", "your-webhook-secret"),
+		},
+		Claude: ClaudeConfig{
+			APIKey:    getEnv("CLAUDE_API_KEY", ""),
+			Model:     getEnv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
+			MaxTokens: getEnvAsInt("CLAUDE_MAX_TOKENS", 4000),
 		},
 	}
 }

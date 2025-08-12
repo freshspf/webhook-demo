@@ -22,7 +22,8 @@ func main() {
 
 	// 初始化服务
 	githubService := services.NewGitHubService(cfg.GitHub.Token)
-	eventProcessor := services.NewEventProcessor(githubService)
+	claudeService := services.NewClaudeService(&cfg.Claude)
+	eventProcessor := services.NewEventProcessor(githubService, claudeService)
 
 	// 初始化处理器
 	webhookHandler := handlers.NewWebhookHandler(eventProcessor, cfg.GitHub.WebhookSecret)
@@ -32,7 +33,8 @@ func main() {
 
 	// 启动服务器
 	srv := &http.Server{
-		Addr:    ":" + cfg.Server.Port,
+		// Addr:    ":" + cfg.Server.Port,
+		Addr:    "0.0.0.0:" + cfg.Server.Port,
 		Handler: router,
 	}
 
