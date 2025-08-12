@@ -1,4 +1,4 @@
-module github.com/webhook-demo/webhook-demo
+module github.com/webhook-demo
 
 go 1.21
 
