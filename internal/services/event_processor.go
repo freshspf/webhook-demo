@@ -260,6 +260,7 @@ type CommandContext struct {
 func (ep *EventProcessor) extractCommand(text string) *Command {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 
+	// TODO 这里有个小bug
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		matches := ep.commandRegex.FindStringSubmatch(line)
