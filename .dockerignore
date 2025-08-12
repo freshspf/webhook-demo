@@ -1,0 +1,28 @@
+# Build caches and outputs
+**/.cache
+**/bin
+**/out
+**/dist
+**/build
+
+# Git
+.git
+.gitignore
+
+# Node (if any)
+node_modules
+
+# Editors
+.vscode
+.idea
+*.swp
+
+# Local env and logs
+.env
+config.env
+*.log
+webhook.log
+
+# OS files
+.DS_Store
+Thumbs.db

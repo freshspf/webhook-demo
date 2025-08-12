@@ -96,7 +96,9 @@ func (cs *ClaudeService) callClaudeAPI(prompt string) (string, error) {
 		return "", fmt.Errorf("序列化请求失败: %v", err)
 	}
 
-	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(jsonData))
+	// req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", "https://api2.aigcbest.top/v1/messages", bytes.NewBuffer(jsonData))
+
 	if err != nil {
 		return "", fmt.Errorf("创建请求失败: %v", err)
 	}
