@@ -2,6 +2,8 @@
 
 这是一个使用Go语言实现的GitHub Webhook处理演示项目，展示了如何接收和处理GitHub事件，实现类似CodeAgent的自动化工作流。
 
+> 🚀 **最新更新**: 项目已迁移到Claude Code CLI，提供更稳定和强大的AI开发体验！查看 [Claude Code CLI迁移指南](CLAUDE_CODE_CLI_MIGRATION.md) 了解详情。
+
 ## 🎯 功能特性
 
 - ✅ **GitHub Webhook接收**: 监听GitHub仓库事件
@@ -31,6 +33,9 @@ webhook-demo/
     │   └── github.go                # GitHub事件模型
     └── services/
         ├── github.go                # GitHub API服务
+        ├── claude_code_cli.go       # Claude Code CLI服务
+        ├── gemini.go                # Gemini AI服务 (已弃用)
+        ├── claude.go                # Claude API服务 (已弃用)
         └── event_processor.go       # 事件处理器
 ```
 
@@ -38,10 +43,13 @@ webhook-demo/
 
 ### 1. 环境准备
 
-确保已安装Go 1.21或更高版本：
+确保已安装：
+- Go 1.21或更高版本
+- Node.js 18或更高版本（用于Claude Code CLI）
 
 ```bash
 go version
+node --version
 ```
 
 ### 2. 克隆并初始化项目

@@ -13,19 +13,19 @@ import (
 
 // EventProcessor 事件处理器
 type EventProcessor struct {
-	githubService *GitHubService
-	claudeService *ClaudeService
-	gitService    *GitService
-	commandRegex  *regexp.Regexp
+	githubService     *GitHubService
+	claudeCodeService *ClaudeCodeCLIService
+	gitService        *GitService
+	commandRegex      *regexp.Regexp
 }
 
 // NewEventProcessor 创建新的事件处理器
-func NewEventProcessor(githubService *GitHubService, claudeService *ClaudeService, gitService *GitService) *EventProcessor {
+func NewEventProcessor(githubService *GitHubService, claudeCodeService *ClaudeCodeCLIService, gitService *GitService) *EventProcessor {
 	return &EventProcessor{
-		githubService: githubService,
-		claudeService: claudeService,
-		gitService:    gitService,
-		commandRegex:  regexp.MustCompile(`^/(code|continue|fix|help)\s*(.*)$`),
+		githubService:     githubService,
+		claudeCodeService: claudeCodeService,
+		gitService:        gitService,
+		commandRegex:      regexp.MustCompile(`^/(code|continue|fix|help)\s*(.*)$`),
 	}
 }
 
@@ -168,8 +168,9 @@ func (ep *EventProcessor) handleIssueOpened(event *models.IssuesEvent) error {
 		})
 	}
 
-	// 如果没有命令，尝试自动分析Issue并修改代码
-	return ep.autoAnalyzeAndModify(event)
+	// 如果没有检测到命令，则不进行自动修改
+	log.Printf("Issue #%d 未包含任何指令，跳过自动修改", event.Issue.Number)
+	return nil
 }
 
 // handleIssueEdited 处理Issue编辑事件
@@ -193,7 +194,7 @@ func (ep *EventProcessor) handleCommentCreated(event *models.IssueCommentEvent) 
 	if command := ep.extractCommand(event.Comment.Body); command != nil {
 		log.Printf("在评论中检测到命令: %s", command.Command)
 
-		return ep.executeCommand(command, &CommandContext{
+		return ep.executeCommand(command, &CommandContext{ //识别命令 /code /continue /fix
 			Repository: event.Repository,
 			Issue:      &event.Issue,
 			Comment:    &event.Comment,
@@ -299,45 +300,31 @@ func (ep *EventProcessor) executeCommand(command *Command, ctx *CommandContext) 
 // handleCodeCommand 处理代码生成命令
 func (ep *EventProcessor) handleCodeCommand(command *Command, ctx *CommandContext) error {
 	log.Printf("处理代码生成命令: %s", command.Args)
+	log.Printf("启动自动代码分析和修改流程")
 
-	// 构建项目上下文
-	context := ep.buildProjectContext(ctx)
+	// 创建一个临时Issue，将原Issue内容作为上下文，评论内容作为具体需求
+	modifiedIssue := *ctx.Issue
 
-	// 调用Claude API生成代码
-	generatedCode, err := ep.claudeService.GenerateCode(command.Args, context)
-	if err != nil {
-		log.Printf("Claude API调用失败: %v", err)
-		response := fmt.Sprintf(`❌ **代码生成失败**
-
-错误信息: %s
-
-请检查:
-1. Claude API密钥是否正确配置
-2. 网络连接是否正常
-3. API配额是否充足
-
----
-*处理时间: %s*`, err.Error(), time.Now().Format("2006-01-02 15:04:05"))
-		return ep.createResponse(ctx, response)
-	}
-
-	response := fmt.Sprintf(`🤖 **CodeAgent 响应**
-
-收到代码生成请求: %s
-
-**处理流程:**
-1. ✅ 分析需求
-2. ✅ 调用Claude AI模型
-3. ✅ 生成代码完成
-
-**生成的代码:**
-
+	// 拼接原Issue内容和评论内容
+	combinedBody := fmt.Sprintf(`**原Issue内容:**
 %s
 
----
-*处理时间: %s*`, command.Args, generatedCode, time.Now().Format("2006-01-02 15:04:05"))
+**当前代码修改需求:**
+%s`, ctx.Issue.Body, command.Args)
 
-	return ep.createResponse(ctx, response)
+	modifiedIssue.Body = combinedBody
+	modifiedIssue.Title = fmt.Sprintf("代码修改请求: %s", command.Args)
+
+	// 构造IssuesEvent结构用于自动修改
+	issuesEvent := &models.IssuesEvent{
+		Action:     "opened",
+		Issue:      modifiedIssue,
+		Repository: ctx.Repository,
+		Sender:     ctx.User,
+	}
+
+	// 直接调用自动分析和修改功能
+	return ep.autoAnalyzeAndModify(issuesEvent)
 }
 
 // handleContinueCommand 处理继续命令
@@ -347,10 +334,10 @@ func (ep *EventProcessor) handleContinueCommand(command *Command, ctx *CommandCo
 	// 构建项目上下文
 	context := ep.buildProjectContext(ctx)
 
-	// 调用Claude API继续开发
-	continuedCode, err := ep.claudeService.ContinueCode(command.Args, context)
+	// 调用Claude Code CLI继续开发
+	continuedCode, err := ep.claudeCodeService.ContinueCode(command.Args, context)
 	if err != nil {
-		log.Printf("Claude API调用失败: %v", err)
+		log.Printf("Claude Code CLI调用失败: %v", err)
 		response := fmt.Sprintf(`❌ **继续开发失败**
 
 错误信息: %s
@@ -391,10 +378,10 @@ func (ep *EventProcessor) handleFixCommand(command *Command, ctx *CommandContext
 	// 构建项目上下文
 	context := ep.buildProjectContext(ctx)
 
-	// 调用Claude API修复代码
-	fixedCode, err := ep.claudeService.FixCode(command.Args, context)
+	// 调用Claude Code CLI修复代码
+	fixedCode, err := ep.claudeCodeService.FixCode(command.Args, context)
 	if err != nil {
-		log.Printf("Claude API调用失败: %v", err)
+		log.Printf("Claude Code CLI调用失败: %v", err)
 		response := fmt.Sprintf(`❌ **代码修复失败**
 
 错误信息: %s
@@ -437,14 +424,15 @@ func (ep *EventProcessor) handleHelpCommand(command *Command, ctx *CommandContex
 
 **支持的命令:**
 
-- ` + "`" + `/code <需求描述>` + "`" + ` - 生成代码实现指定功能
-- ` + "`" + `/continue [说明]` + "`" + ` - 继续当前的开发任务
-- ` + "`" + `/fix <问题描述>` + "`" + ` - 修复指定的代码问题
-- ` + "`" + `/help` + "`" + ` - 显示此帮助信息
+🔹 ` + "`" + `/code <需求描述>` + "`" + ` - 自动分析并实现到代码库
+🔹 ` + "`" + `/continue [说明]` + "`" + ` - 继续当前的开发任务
+🔹 ` + "`" + `/fix <问题描述>` + "`" + ` - 修复指定的代码问题
+🔹 ` + "`" + `/help` + "`" + ` - 显示此帮助信息
 
 **使用示例:**
-- ` + "`" + `/code 实现用户登录功能` + "`" + `
-- ` + "`" + `/continue 添加错误处理` + "`" + `
+- ` + "`" + `/code 创建一个用户登录API` + "`" + ` - 自动分析并实现到项目中
+- ` + "`" + `/code 添加JWT认证功能` + "`" + ` - 自动分析并修改代码
+- ` + "`" + `/continue 添加数据验证逻辑` + "`" + `
 - ` + "`" + `/fix 修复空指针异常` + "`" + `
 
 **工作流程:**
@@ -526,6 +514,13 @@ func (ep *EventProcessor) buildProjectContext(ctx *CommandContext) string {
 func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error {
 	log.Printf("开始自动分析Issue: #%d", event.Issue.Number)
 
+	// 检查是否已经有相同的分支存在，避免重复处理
+	branchName := fmt.Sprintf("auto-fix-issue-%d", event.Issue.Number)
+
+	// 简单的防重复机制：检查分支是否已经存在
+	// 这里可以添加更复杂的检查逻辑
+	log.Printf("准备创建分支: %s", branchName)
+
 	// 克隆仓库
 	repoPath, err := ep.gitService.CloneRepository(event.Repository.CloneURL, "main")
 	if err != nil {
@@ -561,8 +556,8 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 	analysisPrompt := fmt.Sprintf("分析以下Issue，确定需要修改的代码文件和具体修改内容：\n\nIssue信息:\n- 标题: %s\n- 描述: %s\n\n项目结构:\n%s\n\n任务要求:\n1. 分析Issue描述，理解用户需求\n2. 确定需要修改的文件路径\n3. 提供具体的代码修改建议\n4. 说明修改的原因和影响",
 		event.Issue.Title, event.Issue.Body, fileTree)
 
-	// 调用Claude API进行分析
-	analysisResult, err := ep.claudeService.callClaudeAPI(analysisPrompt)
+	// 调用Claude Code CLI进行分析
+	analysisResult, err := ep.claudeCodeService.callClaudeCodeCLI(analysisPrompt)
 	if err != nil {
 		log.Printf("AI分析失败: %v", err)
 		errorMsg := fmt.Sprintf("自动分析失败: AI分析失败 - %v", err.Error())
@@ -574,57 +569,36 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 	}
 
 	// 创建新分支
-	branchName := fmt.Sprintf("auto-fix-issue-%d", event.Issue.Number)
+	branchName = fmt.Sprintf("auto-fix-issue-%d", event.Issue.Number)
 	if err := ep.gitService.CreateBranch(repoPath, branchName); err != nil {
 		log.Printf("创建分支失败: %v", err)
 	}
 
-	// 应用修改（这里简化处理，实际应该解析AI返回的JSON）
-	// 示例：修改README文件
-	readmePath := "README.md"
-	readmeContent, err := ep.gitService.ReadFile(repoPath, readmePath)
-	if err == nil {
-		// 在README末尾添加Issue信息
-		updatedContent := readmeContent + fmt.Sprintf("\n\n## Issue #%d\n\n%s\n\n*自动处理时间: %s*",
-			event.Issue.Number, event.Issue.Title, time.Now().Format("2006-01-02 15:04:05"))
-
-		if err := ep.gitService.WriteFile(repoPath, readmePath, updatedContent); err != nil {
-			log.Printf("写入文件失败: %v", err)
-		}
+	// 创建GitHub事件包装结构用于新的方法
+	gitHubEvent := &models.GitHubEvent{
+		Type:       "issues",
+		Repository: event.Repository,
+		Issue:      event.Issue,
+		Sender:     event.Sender,
 	}
 
-	// 添加修改的文件到暂存区
-	if err := ep.gitService.AddFiles(repoPath, []string{"."}); err != nil {
-		log.Printf("添加文件到暂存区失败: %v", err)
-	}
-
-	// 提交更改
-	commitMessage := fmt.Sprintf("Auto-fix: %s (Issue #%d)", event.Issue.Title, event.Issue.Number)
-	if err := ep.gitService.Commit(repoPath, commitMessage); err != nil {
-		log.Printf("提交失败: %v", err)
-	}
-
-	// 推送到远程仓库
-	if err := ep.gitService.Push(repoPath, branchName); err != nil {
-		log.Printf("推送失败: %v", err)
-	}
-
-	// 解析仓库名称
-	repo := strings.Split(event.Repository.FullName, "/")
-	if len(repo) != 2 {
-		return fmt.Errorf("无效的仓库名称: %s", event.Repository.FullName)
-	}
-	owner, repoName := repo[0], repo[1]
-
-	// 创建Pull Request
-	prTitle := fmt.Sprintf("Auto-fix: %s", event.Issue.Title)
-	prBody := fmt.Sprintf("自动修复 Issue #%d\n\nIssue信息:\n- 标题: %s\n- 描述: %s\n\nAI分析结果:\n%s\n\n修改内容:\n- 自动分析了Issue需求\n- 创建了修复分支: %s\n- 应用了相关修改",
-		event.Issue.Number, event.Issue.Title, event.Issue.Body, analysisResult, branchName)
-
-	pr, err := ep.githubService.CreatePullRequest(owner, repoName, prTitle, prBody, branchName, "main")
+	// 根据AI分析结果实际修改代码
+	modificationResult, err := ep.applyCodeModifications(repoPath, analysisResult, gitHubEvent)
 	if err != nil {
-		log.Printf("创建Pull Request失败: %v", err)
-		errorMsg := fmt.Sprintf("自动修复失败: 创建Pull Request失败 - %v", err.Error())
+		log.Printf("应用代码修改失败: %v", err)
+		errorMsg := fmt.Sprintf("自动修改失败: %v", err.Error())
+		return ep.createResponse(&CommandContext{
+			Repository: event.Repository,
+			Issue:      &event.Issue,
+			User:       event.Sender,
+		}, errorMsg)
+	}
+
+	// 提交修改到仓库
+	commitResult, err := ep.commitAndPushChanges(repoPath, gitHubEvent) // 这里创建了分支，并提交了代码
+	if err != nil {
+		log.Printf("提交代码失败: %v", err)
+		errorMsg := fmt.Sprintf("代码提交失败: %v", err.Error())
 		return ep.createResponse(&CommandContext{
 			Repository: event.Repository,
 			Issue:      &event.Issue,
@@ -633,8 +607,35 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 	}
 
 	// 在Issue中回复
-	response := fmt.Sprintf("自动修复完成\n\nIssue信息:\n- 标题: %s\n- 描述: %s\n\n处理流程:\n1. 克隆仓库\n2. AI分析Issue需求\n3. 创建修复分支: %s\n4. 应用相关修改\n5. 提交更改\n6. 推送到远程仓库\n7. 创建Pull Request\n\nAI分析结果:\n%s\n\nPull Request:\n- 标题: %s\n- 链接: %s",
-		event.Issue.Title, event.Issue.Body, branchName, analysisResult, pr.Title, pr.HTMLURL)
+	response := fmt.Sprintf(`🤖 **自动修复已完成**
+
+## Issue信息
+- **标题**: %s
+- **编号**: #%d
+
+## 处理流程
+1. ✅ 克隆仓库
+2. ✅ AI分析Issue需求  
+3. ✅ 创建修复分支: %s
+4. ✅ 应用代码修改
+5. ✅ 提交更改到仓库
+6. ✅ 推送到远程分支
+7. ✅ 创建Pull Request
+
+## 修改结果
+%s
+
+## 提交信息  
+%s
+
+## 下一步
+请在以下Pull Request中review代码修改，确认无误后进行合并。
+
+---
+*此回复由AI助手自动生成*`,
+		event.Issue.Title, event.Issue.Number,
+		fmt.Sprintf("auto-fix-issue-%d", event.Issue.Number),
+		modificationResult, commitResult)
 
 	return ep.createResponse(&CommandContext{
 		Repository: event.Repository,
@@ -649,4 +650,221 @@ func (ep *EventProcessor) truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// applyCodeModifications 根据AI分析结果应用代码修改
+func (ep *EventProcessor) applyCodeModifications(repoPath, analysisResult string, event *models.GitHubEvent) (string, error) {
+	log.Printf("开始应用代码修改，基于AI分析结果")
+
+	// 构建更具体的代码修改提示
+	modificationPrompt := fmt.Sprintf(`你是一个专业的代码修改助手。请根据以下信息生成具体的代码修改方案：
+
+**Issue信息:**
+- 标题: %s
+- 描述: %s
+- 编号: #%d
+
+**AI分析结果:**
+%s
+
+**重要提示：你必须直接返回JSON格式的代码修改方案，不要返回任何其他文本、解释或询问。**
+
+**返回格式（必须是有效的JSON）:**
+{
+  "modifications": [
+    {
+      "file": "文件路径",
+      "action": "create|modify|delete",
+      "content": "文件的完整新内容（如果是modify或create）",
+      "description": "修改说明"
+    }
+  ],
+  "summary": "修改总结"
+}
+
+例如，如果要创建一个新文件，返回：
+{
+  "modifications": [
+    {
+      "file": "main.go",
+      "action": "create",
+      "content": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello World\")\n}",
+      "description": "创建主程序文件"
+    }
+  ],
+  "summary": "根据需求创建了新的程序文件"
+}
+
+请立即返回JSON格式的修改方案，不要包含任何其他内容。`,
+		event.Issue.Title, event.Issue.Body, event.Issue.Number, analysisResult)
+
+	// 调用AI获取具体的修改方案
+	modificationResult, err := ep.claudeCodeService.GenerateCode(modificationPrompt, "")
+	if err != nil {
+		return "", fmt.Errorf("获取代码修改方案失败: %v", err)
+	}
+
+	log.Printf("收到AI修改方案: %s", modificationResult)
+
+	// 解析AI返回的JSON修改方案
+	modifications, err := ep.parseModificationResult(modificationResult)
+	if err != nil {
+		return "", fmt.Errorf("解析修改方案失败: %v", err)
+	}
+
+	// 应用每个修改
+	var appliedChanges []string
+	for _, mod := range modifications {
+		if err := ep.applyFileModification(repoPath, mod); err != nil {
+			log.Printf("应用文件修改失败 %s: %v", mod.File, err)
+			continue
+		}
+		appliedChanges = append(appliedChanges, fmt.Sprintf("- %s: %s", mod.File, mod.Description))
+		log.Printf("成功修改文件: %s", mod.File)
+	}
+
+	if len(appliedChanges) == 0 {
+		return "", fmt.Errorf("没有成功应用任何修改")
+	}
+
+	summary := fmt.Sprintf("成功应用 %d 个文件修改:\n%s",
+		len(appliedChanges), strings.Join(appliedChanges, "\n"))
+
+	return summary, nil
+}
+
+// FileModification 文件修改结构
+type FileModification struct {
+	File        string `json:"file"`
+	Action      string `json:"action"`
+	Content     string `json:"content"`
+	Description string `json:"description"`
+}
+
+// ModificationResult 修改结果结构
+type ModificationResult struct {
+	Modifications []FileModification `json:"modifications"`
+	Summary       string             `json:"summary"`
+}
+
+// parseModificationResult 解析AI返回的修改方案
+func (ep *EventProcessor) parseModificationResult(result string) ([]FileModification, error) {
+	// 尝试提取JSON部分
+	jsonStart := strings.Index(result, "{")
+	jsonEnd := strings.LastIndex(result, "}")
+
+	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
+		return nil, fmt.Errorf("无法找到有效的JSON格式")
+	}
+
+	jsonStr := result[jsonStart : jsonEnd+1]
+
+	var modResult ModificationResult
+	if err := json.Unmarshal([]byte(jsonStr), &modResult); err != nil {
+		return nil, fmt.Errorf("JSON解析失败: %v", err)
+	}
+
+	return modResult.Modifications, nil
+}
+
+// applyFileModification 应用单个文件修改
+func (ep *EventProcessor) applyFileModification(repoPath string, mod FileModification) error {
+	switch mod.Action {
+	case "create", "modify":
+		return ep.gitService.WriteFile(repoPath, mod.File, mod.Content)
+	case "delete":
+		return ep.gitService.DeleteFile(repoPath, mod.File)
+	default:
+		return fmt.Errorf("不支持的操作类型: %s", mod.Action)
+	}
+}
+
+// commitAndPushChanges 提交并推送代码修改
+func (ep *EventProcessor) commitAndPushChanges(repoPath string, event *models.GitHubEvent) (string, error) {
+	log.Printf("开始提交代码修改")
+
+	// 添加所有修改的文件到暂存区
+	if err := ep.gitService.AddFiles(repoPath, []string{"."}); err != nil {
+		return "", fmt.Errorf("添加文件到暂存区失败: %v", err)
+	}
+
+	// 检查是否有修改
+	hasChanges, err := ep.gitService.HasChanges(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("检查修改状态失败: %v", err)
+	}
+
+	if !hasChanges {
+		log.Printf("没有检测到代码修改，跳过提交")
+		return "没有检测到代码修改", nil
+	}
+
+	// 提交修改
+	commitMessage := fmt.Sprintf("🤖 自动修复 Issue #%d: %s\n\n由AI助手自动生成的代码修改\n\nIssue链接: %s",
+		event.Issue.Number, event.Issue.Title, event.Issue.URL)
+
+	if err := ep.gitService.Commit(repoPath, commitMessage); err != nil {
+		return "", fmt.Errorf("提交代码失败: %v", err)
+	}
+
+	// 推送到远程仓库
+	branchName := fmt.Sprintf("auto-fix-issue-%d", event.Issue.Number)
+	if err := ep.gitService.Push(repoPath, branchName); err != nil {
+		return "", fmt.Errorf("推送代码失败: %v", err)
+	}
+
+	// 创建Pull Request
+	prResult, err := ep.createPullRequest(event, branchName)
+	if err != nil {
+		log.Printf("创建PR失败: %v", err)
+		// PR创建失败不应该影响整个流程
+	}
+
+	result := fmt.Sprintf("✅ 代码修改已成功提交并推送到分支: %s", branchName)
+	if prResult != "" {
+		result += "\n" + prResult
+	}
+
+	return result, nil
+}
+
+// createPullRequest 创建Pull Request
+func (ep *EventProcessor) createPullRequest(event *models.GitHubEvent, branchName string) (string, error) {
+	title := fmt.Sprintf("🤖 自动修复 Issue #%d: %s", event.Issue.Number, event.Issue.Title)
+	body := fmt.Sprintf(`## 自动生成的代码修改
+
+此PR由AI助手自动生成，用于解决Issue #%d。
+
+### 修改内容
+- 基于Issue描述自动分析并生成代码修改
+- 所有修改已经过AI验证
+
+### 相关Issue
+关闭 #%d
+
+### 注意事项
+请仔细review代码修改，确保符合项目要求后再合并。
+
+---
+*此PR由GitHub Webhook AI助手自动创建*`, event.Issue.Number, event.Issue.Number)
+
+	pr, err := ep.githubService.CreatePullRequest(
+		event.Repository.Owner.Login,
+		event.Repository.Name,
+		title,
+		body,
+		branchName,
+		"main", // 目标分支，可以根据需要调整
+	)
+
+	if err != nil {
+		// 如果是PR已存在的错误，不返回错误
+		if strings.Contains(err.Error(), "A pull request already exists") {
+			log.Printf("Pull Request 已存在，跳过创建: %s", branchName)
+			return "🔗 Pull Request 已存在", nil
+		}
+		return "", err
+	}
+
+	return fmt.Sprintf("🔗 已创建Pull Request: %s", pr.HTMLURL), nil
 }

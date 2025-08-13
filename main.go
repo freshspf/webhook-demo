@@ -22,10 +22,10 @@ func main() {
 
 	// 初始化服务
 	githubService := services.NewGitHubService(cfg.GitHub.Token)
-	claudeService := services.NewClaudeService(&cfg.Claude)
+	claudeCodeService := services.NewClaudeCodeCLIService(&cfg.ClaudeCodeCLI)
 	gitConfig := config.LoadGitConfig()
 	gitService := services.NewGitService(gitConfig.WorkDir)
-	eventProcessor := services.NewEventProcessor(githubService, claudeService, gitService)
+	eventProcessor := services.NewEventProcessor(githubService, claudeCodeService, gitService)
 
 	// 初始化处理器
 	webhookHandler := handlers.NewWebhookHandler(eventProcessor, cfg.GitHub.WebhookSecret)

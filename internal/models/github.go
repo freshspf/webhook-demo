@@ -7,10 +7,13 @@ import (
 
 // GitHubEvent GitHub事件结构
 type GitHubEvent struct {
-	Type       string    `json:"type"`
-	DeliveryID string    `json:"delivery_id"`
-	Payload    []byte    `json:"payload"`
-	Timestamp  time.Time `json:"timestamp"`
+	Type       string     `json:"type"`
+	DeliveryID string     `json:"delivery_id"`
+	Payload    []byte     `json:"payload"`
+	Timestamp  time.Time  `json:"timestamp"`
+	Repository Repository `json:"repository"`
+	Issue      Issue      `json:"issue"`
+	Sender     User       `json:"sender"`
 }
 
 // Repository 仓库信息
@@ -21,6 +24,7 @@ type Repository struct {
 	HTMLURL  string `json:"html_url"`
 	CloneURL string `json:"clone_url"`
 	SSHURL   string `json:"ssh_url"`
+	Owner    User   `json:"owner"`
 }
 
 // User 用户信息
@@ -39,6 +43,7 @@ type Issue struct {
 	Body      string    `json:"body"`
 	State     string    `json:"state"`
 	HTMLURL   string    `json:"html_url"`
+	URL       string    `json:"url"`
 	User      User      `json:"user"`
 	Assignee  *User     `json:"assignee"`
 	Labels    []Label   `json:"labels"`

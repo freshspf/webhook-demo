@@ -10,10 +10,12 @@ import (
 
 // Config 应用配置结构
 type Config struct {
-	Server ServerConfig
-	GitHub GitHubConfig
-	Claude ClaudeConfig
-	Git    GitConfig
+	Server        ServerConfig
+	GitHub        GitHubConfig
+	Claude        ClaudeConfig
+	Gemini        GeminiConfig
+	ClaudeCodeCLI ClaudeCodeCLIConfig
+	Git           GitConfig
 }
 
 // ServerConfig 服务器配置
@@ -33,6 +35,24 @@ type ClaudeConfig struct {
 	APIKey    string
 	Model     string
 	MaxTokens int
+}
+
+// GeminiConfig Gemini CLI相关配置（已弃用）
+type GeminiConfig struct {
+	APIKey         string
+	Model          string
+	MaxTokens      int
+	ProjectID      string
+	TimeoutSeconds int
+}
+
+// ClaudeCodeCLIConfig Claude Code CLI相关配置
+type ClaudeCodeCLIConfig struct {
+	APIKey         string
+	Model          string
+	MaxTokens      int
+	TimeoutSeconds int
+	BaseURL        string
 }
 
 // Load 加载配置
@@ -55,6 +75,20 @@ func Load() *Config {
 			APIKey:    getEnv("CLAUDE_API_KEY", ""),
 			Model:     getEnv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
 			MaxTokens: getEnvAsInt("CLAUDE_MAX_TOKENS", 4000),
+		},
+		Gemini: GeminiConfig{
+			APIKey:         getEnv("GEMINI_API_KEY", ""),
+			Model:          getEnv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
+			MaxTokens:      getEnvAsInt("GEMINI_MAX_TOKENS", 8000),
+			ProjectID:      getEnv("GOOGLE_CLOUD_PROJECT", ""),
+			TimeoutSeconds: getEnvAsInt("GEMINI_TIMEOUT_SECONDS", 120),
+		},
+		ClaudeCodeCLI: ClaudeCodeCLIConfig{
+			APIKey:         getEnv("CLAUDE_CODE_CLI_API_KEY", ""),
+			Model:          getEnv("CLAUDE_CODE_CLI_MODEL", "claude-3-5-sonnet-20241022"),
+			MaxTokens:      getEnvAsInt("CLAUDE_CODE_CLI_MAX_TOKENS", 4000),
+			TimeoutSeconds: getEnvAsInt("CLAUDE_CODE_CLI_TIMEOUT_SECONDS", 120),
+			BaseURL:        getEnv("ANTHROPIC_BASE_URL", ""),
 		},
 	}
 }

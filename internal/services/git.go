@@ -350,3 +350,35 @@ func (gs *GitService) FindFilesByPattern(repoPath, pattern string) ([]string, er
 
 	return files, nil
 }
+
+// HasChanges 检查是否有未提交的修改
+func (gs *GitService) HasChanges(repoPath string) (bool, error) {
+	// 检查是否有暂存的文件
+	cmd := exec.Command("git", "diff", "--cached", "--name-only")
+	cmd.Dir = repoPath
+
+	output, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("检查git暂存状态失败: %v", err)
+	}
+
+	// 如果输出不为空，说明有暂存的文件
+	return strings.TrimSpace(string(output)) != "", nil
+}
+
+// DeleteFile 删除文件
+func (gs *GitService) DeleteFile(repoPath, filePath string) error {
+	fullPath := filepath.Join(repoPath, filePath)
+
+	// 检查文件是否存在
+	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		return nil // 文件不存在，认为删除成功
+	}
+
+	// 删除文件
+	if err := os.Remove(fullPath); err != nil {
+		return fmt.Errorf("删除文件失败: %v", err)
+	}
+
+	return nil
+}
