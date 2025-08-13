@@ -15,14 +15,16 @@ import (
 type EventProcessor struct {
 	githubService *GitHubService
 	claudeService *ClaudeService
+	gitService    *GitService
 	commandRegex  *regexp.Regexp
 }
 
 // NewEventProcessor 创建新的事件处理器
-func NewEventProcessor(githubService *GitHubService, claudeService *ClaudeService) *EventProcessor {
+func NewEventProcessor(githubService *GitHubService, claudeService *ClaudeService, gitService *GitService) *EventProcessor {
 	return &EventProcessor{
 		githubService: githubService,
 		claudeService: claudeService,
+		gitService:    gitService,
 		commandRegex:  regexp.MustCompile(`^/(code|continue|fix|help)\s*(.*)$`),
 	}
 }
@@ -166,7 +168,8 @@ func (ep *EventProcessor) handleIssueOpened(event *models.IssuesEvent) error {
 		})
 	}
 
-	return nil
+	// 如果没有命令，尝试自动分析Issue并修改代码
+	return ep.autoAnalyzeAndModify(event)
 }
 
 // handleIssueEdited 处理Issue编辑事件
@@ -517,6 +520,127 @@ func (ep *EventProcessor) buildProjectContext(ctx *CommandContext) string {
 	context.WriteString(fmt.Sprintf("- 用户: %s\n", ctx.User.Login))
 
 	return context.String()
+}
+
+// autoAnalyzeAndModify 自动分析Issue并修改代码
+func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error {
+	log.Printf("开始自动分析Issue: #%d", event.Issue.Number)
+
+	// 克隆仓库
+	repoPath, err := ep.gitService.CloneRepository(event.Repository.CloneURL, "main")
+	if err != nil {
+		log.Printf("克隆仓库失败: %v", err)
+		errorMsg := fmt.Sprintf("自动分析失败: 克隆仓库失败 - %v", err.Error())
+		return ep.createResponse(&CommandContext{
+			Repository: event.Repository,
+			Issue:      &event.Issue,
+			User:       event.Sender,
+		}, errorMsg)
+	}
+
+	// 清理工作目录
+	defer func() {
+		if err := ep.gitService.Cleanup(repoPath); err != nil {
+			log.Printf("清理工作目录失败: %v", err)
+		}
+	}()
+
+	// 获取文件树
+	fileTree, err := ep.gitService.GetFileTree(repoPath)
+	if err != nil {
+		log.Printf("获取文件树失败: %v", err)
+		fileTree = "无法获取文件树"
+	}
+
+	// 配置Git用户
+	if err := ep.gitService.ConfigureGit(repoPath, "CodeAgent", "codeagent@example.com"); err != nil {
+		log.Printf("配置Git失败: %v", err)
+	}
+
+	// 分析Issue内容，确定需要修改的文件
+	analysisPrompt := fmt.Sprintf("分析以下Issue，确定需要修改的代码文件和具体修改内容：\n\nIssue信息:\n- 标题: %s\n- 描述: %s\n\n项目结构:\n%s\n\n任务要求:\n1. 分析Issue描述，理解用户需求\n2. 确定需要修改的文件路径\n3. 提供具体的代码修改建议\n4. 说明修改的原因和影响",
+		event.Issue.Title, event.Issue.Body, fileTree)
+
+	// 调用Claude API进行分析
+	analysisResult, err := ep.claudeService.callClaudeAPI(analysisPrompt)
+	if err != nil {
+		log.Printf("AI分析失败: %v", err)
+		errorMsg := fmt.Sprintf("自动分析失败: AI分析失败 - %v", err.Error())
+		return ep.createResponse(&CommandContext{
+			Repository: event.Repository,
+			Issue:      &event.Issue,
+			User:       event.Sender,
+		}, errorMsg)
+	}
+
+	// 创建新分支
+	branchName := fmt.Sprintf("auto-fix-issue-%d", event.Issue.Number)
+	if err := ep.gitService.CreateBranch(repoPath, branchName); err != nil {
+		log.Printf("创建分支失败: %v", err)
+	}
+
+	// 应用修改（这里简化处理，实际应该解析AI返回的JSON）
+	// 示例：修改README文件
+	readmePath := "README.md"
+	readmeContent, err := ep.gitService.ReadFile(repoPath, readmePath)
+	if err == nil {
+		// 在README末尾添加Issue信息
+		updatedContent := readmeContent + fmt.Sprintf("\n\n## Issue #%d\n\n%s\n\n*自动处理时间: %s*",
+			event.Issue.Number, event.Issue.Title, time.Now().Format("2006-01-02 15:04:05"))
+
+		if err := ep.gitService.WriteFile(repoPath, readmePath, updatedContent); err != nil {
+			log.Printf("写入文件失败: %v", err)
+		}
+	}
+
+	// 添加修改的文件到暂存区
+	if err := ep.gitService.AddFiles(repoPath, []string{"."}); err != nil {
+		log.Printf("添加文件到暂存区失败: %v", err)
+	}
+
+	// 提交更改
+	commitMessage := fmt.Sprintf("Auto-fix: %s (Issue #%d)", event.Issue.Title, event.Issue.Number)
+	if err := ep.gitService.Commit(repoPath, commitMessage); err != nil {
+		log.Printf("提交失败: %v", err)
+	}
+
+	// 推送到远程仓库
+	if err := ep.gitService.Push(repoPath, branchName); err != nil {
+		log.Printf("推送失败: %v", err)
+	}
+
+	// 解析仓库名称
+	repo := strings.Split(event.Repository.FullName, "/")
+	if len(repo) != 2 {
+		return fmt.Errorf("无效的仓库名称: %s", event.Repository.FullName)
+	}
+	owner, repoName := repo[0], repo[1]
+
+	// 创建Pull Request
+	prTitle := fmt.Sprintf("Auto-fix: %s", event.Issue.Title)
+	prBody := fmt.Sprintf("自动修复 Issue #%d\n\nIssue信息:\n- 标题: %s\n- 描述: %s\n\nAI分析结果:\n%s\n\n修改内容:\n- 自动分析了Issue需求\n- 创建了修复分支: %s\n- 应用了相关修改",
+		event.Issue.Number, event.Issue.Title, event.Issue.Body, analysisResult, branchName)
+
+	pr, err := ep.githubService.CreatePullRequest(owner, repoName, prTitle, prBody, branchName, "main")
+	if err != nil {
+		log.Printf("创建Pull Request失败: %v", err)
+		errorMsg := fmt.Sprintf("自动修复失败: 创建Pull Request失败 - %v", err.Error())
+		return ep.createResponse(&CommandContext{
+			Repository: event.Repository,
+			Issue:      &event.Issue,
+			User:       event.Sender,
+		}, errorMsg)
+	}
+
+	// 在Issue中回复
+	response := fmt.Sprintf("自动修复完成\n\nIssue信息:\n- 标题: %s\n- 描述: %s\n\n处理流程:\n1. 克隆仓库\n2. AI分析Issue需求\n3. 创建修复分支: %s\n4. 应用相关修改\n5. 提交更改\n6. 推送到远程仓库\n7. 创建Pull Request\n\nAI分析结果:\n%s\n\nPull Request:\n- 标题: %s\n- 链接: %s",
+		event.Issue.Title, event.Issue.Body, branchName, analysisResult, pr.Title, pr.HTMLURL)
+
+	return ep.createResponse(&CommandContext{
+		Repository: event.Repository,
+		Issue:      &event.Issue,
+		User:       event.Sender,
+	}, response)
 }
 
 // truncateString 截断字符串

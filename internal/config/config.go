@@ -13,6 +13,7 @@ type Config struct {
 	Server ServerConfig
 	GitHub GitHubConfig
 	Claude ClaudeConfig
+	Git    GitConfig
 }
 
 // ServerConfig 服务器配置
