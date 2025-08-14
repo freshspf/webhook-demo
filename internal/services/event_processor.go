@@ -568,8 +568,10 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 		}, errorMsg)
 	}
 
-	// 创建新分支
-	branchName = fmt.Sprintf("auto-fix-issue-%d", event.Issue.Number)
+	// 创建新分支，使用带时间戳的分支名避免冲突
+	timestamp := time.Now().Format("20060102-150405")
+	branchName = fmt.Sprintf("auto-fix-issue-%d-%s", event.Issue.Number, timestamp)
+	log.Printf("创建分支: %s", branchName)
 	if err := ep.gitService.CreateBranch(repoPath, branchName); err != nil {
 		log.Printf("创建分支失败: %v", err)
 	}
@@ -595,7 +597,7 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 	}
 
 	// 提交修改到仓库
-	commitResult, err := ep.commitAndPushChanges(repoPath, gitHubEvent) // 这里创建了分支，并提交了代码
+	commitResult, err := ep.commitAndPushChanges(repoPath, gitHubEvent, branchName)
 	if err != nil {
 		log.Printf("提交代码失败: %v", err)
 		errorMsg := fmt.Sprintf("代码提交失败: %v", err.Error())
@@ -780,7 +782,7 @@ func (ep *EventProcessor) applyFileModification(repoPath string, mod FileModific
 }
 
 // commitAndPushChanges 提交并推送代码修改
-func (ep *EventProcessor) commitAndPushChanges(repoPath string, event *models.GitHubEvent) (string, error) {
+func (ep *EventProcessor) commitAndPushChanges(repoPath string, event *models.GitHubEvent, branchName string) (string, error) {
 	log.Printf("开始提交代码修改")
 
 	// 添加所有修改的文件到暂存区
@@ -808,10 +810,13 @@ func (ep *EventProcessor) commitAndPushChanges(repoPath string, event *models.Gi
 	}
 
 	// 推送到远程仓库
-	branchName := fmt.Sprintf("auto-fix-issue-%d", event.Issue.Number)
+	log.Printf("推送分支: %s", branchName)
 	if err := ep.gitService.Push(repoPath, branchName); err != nil {
+		log.Printf("推送失败，错误信息: %v", err)
 		return "", fmt.Errorf("推送代码失败: %v", err)
 	}
+
+	log.Printf("推送成功: %s", branchName)
 
 	// 创建Pull Request
 	prResult, err := ep.createPullRequest(event, branchName)

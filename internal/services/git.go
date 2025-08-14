@@ -1,6 +1,8 @@
 package services
 
 import (
+	"context"
+	"crypto/md5"
 	"fmt"
 	"io"
 	"log"
@@ -8,12 +10,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 // GitService Git操作服务
 type GitService struct {
-	workDir string // 工作目录
+	workDir      string                 // 工作目录
+	repoCache    map[string]*CachedRepo // 仓库缓存
+	cacheMutex   sync.RWMutex           // 缓存读写锁
+	lastCloneMap map[string]time.Time   // 记录每个仓库的最后克隆时间
+	cloneMutex   sync.RWMutex           // 克隆时间锁
+}
+
+// CachedRepo 缓存的仓库信息
+type CachedRepo struct {
+	Path       string    // 仓库路径
+	URL        string    // 仓库URL
+	Branch     string    // 分支
+	LastUpdate time.Time // 最后更新时间
+	Valid      bool      // 是否有效
 }
 
 // NewGitService 创建新的Git服务
@@ -28,12 +44,26 @@ func NewGitService(workDir string) *GitService {
 	}
 
 	return &GitService{
-		workDir: workDir,
+		workDir:      workDir,
+		repoCache:    make(map[string]*CachedRepo),
+		lastCloneMap: make(map[string]time.Time),
 	}
 }
 
-// CloneRepository 克隆仓库
+// CloneRepository 克隆仓库（带缓存和重试机制）
 func (gs *GitService) CloneRepository(repoURL, branch string) (string, error) {
+	// 检查频率限制
+	if err := gs.checkRateLimit(repoURL); err != nil {
+		return "", err
+	}
+
+	// 检查缓存
+	cacheKey := gs.generateCacheKey(repoURL, branch)
+	if cachedRepo := gs.getCachedRepo(cacheKey); cachedRepo != nil {
+		log.Printf("使用缓存仓库: %s", cachedRepo.Path)
+		return cachedRepo.Path, nil
+	}
+
 	// 生成唯一的目录名
 	timestamp := time.Now().Format("20060102_150405")
 	repoName := fmt.Sprintf("repo_%s", timestamp)
@@ -41,14 +71,23 @@ func (gs *GitService) CloneRepository(repoURL, branch string) (string, error) {
 
 	log.Printf("克隆仓库: %s 到 %s", repoURL, repoPath)
 
-	// 执行git clone命令
-	cmd := exec.Command("git", "clone", "-b", branch, repoURL, repoPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// 记录克隆时间
+	gs.recordCloneTime(repoURL)
 
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("克隆仓库失败: %v", err)
+	// 尝试克隆
+	repoPath, err := gs.attemptClone(repoURL, branch, repoPath)
+	if err != nil {
+		return "", err
 	}
+
+	// 克隆成功，缓存结果
+	gs.cacheRepo(cacheKey, &CachedRepo{
+		Path:       repoPath,
+		URL:        repoURL,
+		Branch:     branch,
+		LastUpdate: time.Now(),
+		Valid:      true,
+	})
 
 	log.Printf("仓库克隆成功: %s", repoPath)
 	return repoPath, nil
@@ -219,11 +258,25 @@ func (gs *GitService) Commit(repoPath, message string) error {
 func (gs *GitService) Push(repoPath, branchName string) error {
 	log.Printf("推送分支: %s", branchName)
 
-	cmd := exec.Command("git", "-C", repoPath, "push", "origin", branchName)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// 设置超时
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
 
-	if err := cmd.Run(); err != nil {
+	// 简单的推送命令，使用环境变量中的代理设置
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath,
+		"-c", "http.sslVerify=false",
+		"-c", "http.postBuffer=1048576000",
+		"push", "-u", "origin", branchName)
+
+	// 继承环境变量（包括代理设置）
+	cmd.Env = append(os.Environ(),
+		"GIT_HTTP_TIMEOUT=90",
+		"GIT_HTTP_MAX_RETRIES=3")
+
+	// 执行推送
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("推送失败，错误输出: %s", string(output))
 		return fmt.Errorf("推送失败: %v", err)
 	}
 
@@ -381,4 +434,182 @@ func (gs *GitService) DeleteFile(repoPath, filePath string) error {
 	}
 
 	return nil
+}
+
+// testNetworkConnection 测试网络连接
+func (gs *GitService) testNetworkConnection() error {
+	// 测试DNS解析
+	log.Printf("测试DNS解析...")
+	pingCmd := exec.Command("ping", "-c", "1", "github.com")
+	pingCmd.Stdout = os.Stdout
+	pingCmd.Stderr = os.Stderr
+	if err := pingCmd.Run(); err != nil {
+		return fmt.Errorf("ping github.com 失败: %v", err)
+	}
+
+	// 测试网络连接 - 尝试HTTP和HTTPS
+	log.Printf("测试HTTP连接...")
+	httpCmd := exec.Command("curl", "-I", "--connect-timeout", "10", "http://github.com")
+	httpCmd.Stdout = os.Stdout
+	httpCmd.Stderr = os.Stderr
+	if err := httpCmd.Run(); err != nil {
+		log.Printf("HTTP连接测试失败: %v", err)
+	} else {
+		log.Printf("HTTP连接测试成功")
+	}
+
+	log.Printf("测试HTTPS连接(跳过SSL验证)...")
+	curlCmd := exec.Command("curl", "-I", "-k", "--http1.1", "--connect-timeout", "10", "https://github.com")
+	curlCmd.Stdout = os.Stdout
+	curlCmd.Stderr = os.Stderr
+	if err := curlCmd.Run(); err != nil {
+		log.Printf("HTTPS连接测试失败，但继续尝试Git克隆: %v", err)
+		// 即使网络测试失败，也继续尝试Git克隆
+	}
+
+	return nil
+}
+
+// generateCacheKey 生成缓存键
+func (gs *GitService) generateCacheKey(repoURL, branch string) string {
+	data := fmt.Sprintf("%s:%s", repoURL, branch)
+	hash := md5.Sum([]byte(data))
+	return fmt.Sprintf("%x", hash)
+}
+
+// getCachedRepo 获取缓存的仓库
+func (gs *GitService) getCachedRepo(cacheKey string) *CachedRepo {
+	gs.cacheMutex.RLock()
+	defer gs.cacheMutex.RUnlock()
+
+	cachedRepo, exists := gs.repoCache[cacheKey]
+	if !exists || !cachedRepo.Valid {
+		return nil
+	}
+
+	// 检查缓存是否过期（30分钟）
+	if time.Since(cachedRepo.LastUpdate) > 30*time.Minute {
+		log.Printf("缓存过期，删除缓存: %s", cachedRepo.Path)
+		return nil
+	}
+
+	// 检查目录是否还存在
+	if _, err := os.Stat(cachedRepo.Path); os.IsNotExist(err) {
+		log.Printf("缓存目录不存在，删除缓存: %s", cachedRepo.Path)
+		return nil
+	}
+
+	return cachedRepo
+}
+
+// cacheRepo 缓存仓库
+func (gs *GitService) cacheRepo(cacheKey string, repo *CachedRepo) {
+	gs.cacheMutex.Lock()
+	defer gs.cacheMutex.Unlock()
+	gs.repoCache[cacheKey] = repo
+}
+
+// checkRateLimit 检查频率限制
+func (gs *GitService) checkRateLimit(repoURL string) error {
+	gs.cloneMutex.RLock()
+	lastClone, exists := gs.lastCloneMap[repoURL]
+	gs.cloneMutex.RUnlock()
+
+	if exists {
+		// GitHub限制：同一仓库5分钟内不能频繁克隆
+		timeSinceLastClone := time.Since(lastClone)
+		minInterval := 5 * time.Minute
+
+		if timeSinceLastClone < minInterval {
+			waitTime := minInterval - timeSinceLastClone
+			log.Printf("频率限制：需要等待 %v 后才能重新克隆 %s", waitTime, repoURL)
+			return fmt.Errorf("频率限制：请等待 %v 后重试", waitTime)
+		}
+	}
+
+	return nil
+}
+
+// recordCloneTime 记录克隆时间
+func (gs *GitService) recordCloneTime(repoURL string) {
+	gs.cloneMutex.Lock()
+	defer gs.cloneMutex.Unlock()
+	gs.lastCloneMap[repoURL] = time.Now()
+}
+
+// attemptClone 尝试克隆仓库
+func (gs *GitService) attemptClone(repoURL, branch, repoPath string) (string, error) {
+	log.Printf("克隆仓库: %s, 分支: %s", repoURL, branch)
+
+	// 清理目标目录
+	os.RemoveAll(repoPath)
+
+	// 设置超时
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// 简单的浅克隆命令
+	cmd := exec.CommandContext(ctx, "git", "clone",
+		"-c", "http.sslVerify=false",
+		"-c", "http.postBuffer=1048576000",
+		"-b", branch,
+		"--depth", "1",
+		"--single-branch",
+		repoURL, repoPath)
+
+	// 继承环境变量（包括代理设置）
+	cmd.Env = append(os.Environ(),
+		"GIT_HTTP_TIMEOUT=60",
+		"GIT_HTTP_MAX_RETRIES=3",
+		"GIT_TERMINAL_PROGRESS=0")
+
+	// 执行克隆
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("克隆失败，错误输出: %s", string(output))
+		return "", fmt.Errorf("克隆失败: %v", err)
+	}
+
+	log.Printf("克隆成功: %s", repoPath)
+	return repoPath, nil
+}
+
+// ClearCache 清理缓存
+func (gs *GitService) ClearCache() {
+	gs.cacheMutex.Lock()
+	defer gs.cacheMutex.Unlock()
+
+	for key, repo := range gs.repoCache {
+		if repo.Path != "" {
+			os.RemoveAll(repo.Path)
+		}
+		delete(gs.repoCache, key)
+	}
+
+	log.Printf("缓存已清理")
+}
+
+// GetCacheStatus 获取缓存状态
+func (gs *GitService) GetCacheStatus() map[string]interface{} {
+	gs.cacheMutex.RLock()
+	defer gs.cacheMutex.RUnlock()
+
+	status := map[string]interface{}{
+		"cached_repos": len(gs.repoCache),
+		"repos":        make([]map[string]interface{}, 0),
+	}
+
+	for key, repo := range gs.repoCache {
+		repoInfo := map[string]interface{}{
+			"key":         key,
+			"url":         repo.URL,
+			"branch":      repo.Branch,
+			"path":        repo.Path,
+			"last_update": repo.LastUpdate,
+			"valid":       repo.Valid,
+		}
+		status["repos"] = append(status["repos"].([]map[string]interface{}), repoInfo)
+	}
+
+	return status
 }

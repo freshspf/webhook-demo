@@ -74,9 +74,19 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLI(prompt string) (string, error
 		env = append(env, "ANTHROPIC_BASE_URL="+ccs.config.BaseURL)
 	}
 
+	// 在Clash规则模式下，优先使用NO_PROXY设置
+	// 这样既兼容全局代理，也兼容规则模式
+	env = append(env, "NO_PROXY=cc.qiniu.com,qiniu.com")
+	env = append(env, "no_proxy=cc.qiniu.com,qiniu.com")
+
 	// 添加调试信息
 	log.Printf("设置环境变量: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s",
 		ccs.maskAPIKey(ccs.config.APIKey), ccs.config.BaseURL)
+	log.Printf("子进程代理环境: HTTP_PROXY=%t, HTTPS_PROXY=%t, ALL_PROXY=%t, NO_PROXY=%t",
+		strings.Contains(strings.Join(env, " "), "HTTP_PROXY"),
+		strings.Contains(strings.Join(env, " "), "HTTPS_PROXY"),
+		strings.Contains(strings.Join(env, " "), "ALL_PROXY"),
+		strings.Contains(strings.Join(env, " "), "NO_PROXY"))
 
 	// 执行命令
 	cmd := exec.Command("claude", args...)
