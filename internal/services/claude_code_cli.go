@@ -1,6 +1,8 @@
 package services
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -63,6 +65,33 @@ func (ccs *ClaudeCodeCLIService) ReviewCodeInRepo(reviewPrompt string, repoPath 
 	return ccs.callClaudeCodeCLIInDir(reviewPrompt, repoPath)
 }
 
+// GenerateCodeInRepo 在指定仓库目录中生成代码
+func (ccs *ClaudeCodeCLIService) GenerateCodeInRepo(prompt string, repoPath string) (string, error) {
+	return ccs.callClaudeCodeCLIInDirWithRetry(prompt, repoPath, 2)
+}
+
+// callClaudeCodeCLIInDirWithRetry 带重试的CLI调用
+func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDirWithRetry(prompt string, workDir string, maxRetries int) (string, error) {
+	var lastErr error
+	
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			log.Printf("Claude CLI调用失败，进行第%d次重试", attempt)
+			time.Sleep(time.Duration(attempt) * 2 * time.Second) // 逐渐增加延迟
+		}
+		
+		result, err := ccs.callClaudeCodeCLIInDir(prompt, workDir)
+		if err == nil {
+			return result, nil
+		}
+		
+		lastErr = err
+		log.Printf("第%d次尝试失败: %v", attempt+1, err)
+	}
+	
+	return "", fmt.Errorf("Claude CLI调用在%d次尝试后仍然失败: %v", maxRetries+1, lastErr)
+}
+
 // callClaudeCodeCLI 调用Claude Code CLI
 func (ccs *ClaudeCodeCLIService) callClaudeCodeCLI(prompt string) (string, error) {
 	return ccs.callClaudeCodeCLIInDir(prompt, "")
@@ -80,6 +109,9 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir s
 
 	// 使用非交互模式
 	args = append(args, "--print")
+
+	// 添加详细输出参数（用于调试）
+	args = append(args, "--verbose")
 
 	// 添加模型参数（如果指定）
 	if ccs.config.Model != "" {
@@ -105,8 +137,17 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir s
 		ccs.maskAPIKey(ccs.config.APIKey), ccs.config.BaseURL)
 	log.Printf("执行命令: claude %v", args)
 
-	// 执行命令，使用stdin传递提示词
-	cmd := exec.Command("claude", args...)
+	// 创建带超时的context - 对于代码生成任务使用更长的超时时间
+	timeout := 300 * time.Second // 5分钟超时，适合复杂代码生成任务
+	if ccs.config.TimeoutSeconds > 0 {
+		timeout = time.Duration(ccs.config.TimeoutSeconds) * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// 执行命令，使用context控制超时
+	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Env = env
 
 	// 设置工作目录
@@ -118,25 +159,59 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir s
 	// 通过stdin传递提示词，避免命令行参数长度限制
 	cmd.Stdin = strings.NewReader(prompt)
 
-	// 在这里加个sleep，等待3秒钟
-	time.Sleep(3 * time.Second)
+	// 使用管道分别获取stdout和stderr
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
-	// 执行命令并获取输出
-	output, err := cmd.Output()
-	if err != nil {
-		// 如果是ExitError，可以获取stderr
-		if exitError, ok := err.(*exec.ExitError); ok {
-			stderr := string(exitError.Stderr)
-			log.Printf("Claude CLI stderr: %s", stderr)
-			log.Printf("Claude CLI exit code: %v", err)
-			return "", fmt.Errorf("claude Code CLI执行失败: %v, 错误输出: %s", err, stderr)
-		}
-		return "", fmt.Errorf("claude Code CLI执行失败: %v", err)
+	log.Printf("开始执行Claude CLI命令，超时时间: %v", timeout)
+	log.Printf("命令详情: %s %v", cmd.Path, cmd.Args)
+	log.Printf("工作目录: %s", cmd.Dir)
+	startTime := time.Now()
+
+	// 执行命令
+	err := cmd.Run()
+	duration := time.Since(startTime)
+
+	log.Printf("Claude CLI执行完成，耗时: %v", duration)
+
+	// 获取输出内容
+	outputStr := strings.TrimSpace(stdout.String())
+	stderrStr := strings.TrimSpace(stderr.String())
+
+	// 记录错误输出（如果有）
+	if stderrStr != "" {
+		log.Printf("Claude CLI stderr: %s", stderrStr)
 	}
 
-	outputStr := strings.TrimSpace(string(output))
+	// 处理执行错误
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("claude Code CLI调用超时 (%v)", timeout)
+		}
+
+		errorMsg := "claude Code CLI执行失败: " + err.Error()
+		if stderrStr != "" {
+			errorMsg += fmt.Sprintf(", 错误输出: %s", stderrStr)
+		}
+		return "", fmt.Errorf(errorMsg)
+	}
+
+	// 检查输出内容
 	if outputStr == "" {
+		if stderrStr != "" {
+			return "", fmt.Errorf("claude Code CLI没有返回任何输出，错误信息: %s", stderrStr)
+		}
 		return "", fmt.Errorf("claude Code CLI没有返回任何输出")
+	}
+
+	// 检查输出长度，如果太短可能是错误消息
+	if len(outputStr) < 50 {
+		log.Printf("Claude CLI输出可能是错误消息（长度: %d）: %s", len(outputStr), outputStr)
+		// 如果是明显的错误信息，直接返回错误
+		if strings.Contains(strings.ToLower(outputStr), "error") {
+			return "", fmt.Errorf("claude Code CLI执行出错: %s", outputStr)
+		}
 	}
 
 	log.Printf("Claude Code CLI调用成功，输出长度: %d 字符", len(outputStr))

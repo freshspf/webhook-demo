@@ -1036,33 +1036,14 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 		}
 	}()
 
-	// 获取文件树
-	fileTree, err := ep.gitService.GetFileTree(repoPath)
-	if err != nil {
-		log.Printf("获取文件树失败: %v", err)
-		fileTree = "无法获取文件树"
-	}
+	log.Printf("仓库路径: %s", repoPath)
 
 	// 配置Git用户
 	if err := ep.gitService.ConfigureGit(repoPath, "CodeAgent", "codeagent@example.com"); err != nil {
 		log.Printf("配置Git失败: %v", err)
 	}
 
-	// 分析Issue内容，确定需要修改的文件
-	analysisPrompt := fmt.Sprintf("分析以下Issue，确定需要修改的代码文件和具体修改内容：\n\nIssue信息:\n- 标题: %s\n- 描述: %s\n\n项目结构:\n%s\n\n任务要求:\n1. 分析Issue描述，理解用户需求\n2. 确定需要修改的文件路径\n3. 提供具体的代码修改建议\n4. 说明修改的原因和影响",
-		event.Issue.Title, event.Issue.Body, fileTree)
-
-	// 调用Claude Code CLI进行分析
-	analysisResult, err := ep.claudeCodeService.callClaudeCodeCLI(analysisPrompt)
-	if err != nil {
-		log.Printf("AI分析失败: %v", err)
-		errorMsg := fmt.Sprintf("自动分析失败: AI分析失败 - %v", err.Error())
-		return ep.createResponse(&CommandContext{
-			Repository: event.Repository,
-			Issue:      &event.Issue,
-			User:       event.Sender,
-		}, errorMsg)
-	}
+	log.Printf("准备在仓库目录中直接进行代码修改")
 
 	// 创建新分支，使用带时间戳的分支名避免冲突
 	timestamp := time.Now().Format("20060102-150405")
@@ -1080,10 +1061,23 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 		Sender:     event.Sender,
 	}
 
-	// 根据AI分析结果实际修改代码
-	modificationResult, err := ep.applyCodeModifications(repoPath, analysisResult, gitHubEventForModification)
+	// 直接在仓库目录中调用Claude Code CLI进行代码修改
+	modificationPrompt := fmt.Sprintf(`请根据以下需求修改代码：
+
+**需求：**
+%s
+
+**描述：**
+%s
+
+**说明：**
+- 请直接修改需要的文件
+- 确保代码可以正常运行
+- 遵循最佳实践`, event.Issue.Title, event.Issue.Body)
+
+	modificationResult, err := ep.claudeCodeService.GenerateCodeInRepo(modificationPrompt, repoPath)
 	if err != nil {
-		log.Printf("应用代码修改失败: %v", err)
+		log.Printf("Claude Code CLI代码修改失败: %v", err)
 		errorMsg := fmt.Sprintf("自动修改失败: %v", err.Error())
 		return ep.createResponse(&CommandContext{
 			Repository: event.Repository,
