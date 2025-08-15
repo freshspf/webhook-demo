@@ -205,6 +205,56 @@ func (gs *GitService) GetFileTree(repoPath string) (string, error) {
 	return tree.String(), nil
 }
 
+// GetPullRequestDiff 获取Pull Request的代码差异
+func (gs *GitService) GetPullRequestDiff(repoPath, headSHA, baseSHA string) (string, error) {
+	log.Printf("获取PR diff: %s -> %s", baseSHA, headSHA)
+
+	// 先fetch head分支的内容
+	fetchCmd := exec.Command("git", "fetch", "origin", headSHA)
+	fetchCmd.Dir = repoPath
+	if err := fetchCmd.Run(); err != nil {
+		log.Printf("fetch head SHA失败: %v", err)
+		// 尝试使用分支名而不是SHA
+		return gs.getPullRequestDiffByBranch(repoPath)
+	}
+
+	// 获取diff
+	diffCmd := exec.Command("git", "diff", baseSHA+"..."+headSHA)
+	diffCmd.Dir = repoPath
+
+	output, err := diffCmd.Output()
+	if err != nil {
+		log.Printf("获取git diff失败: %v", err)
+		return "无法获取PR代码差异", nil
+	}
+
+	diff := string(output)
+	if diff == "" {
+		return "PR无代码变更", nil
+	}
+
+	// 限制diff长度，避免过长
+	if len(diff) > 10000 {
+		diff = diff[:10000] + "\n\n... (diff内容过长，已截断)"
+	}
+
+	return diff, nil
+}
+
+// getPullRequestDiffByBranch 通过分支获取diff（备用方法）
+func (gs *GitService) getPullRequestDiffByBranch(repoPath string) (string, error) {
+	// 简单获取最近几个commit的diff
+	diffCmd := exec.Command("git", "log", "--oneline", "-5", "--stat")
+	diffCmd.Dir = repoPath
+
+	output, err := diffCmd.Output()
+	if err != nil {
+		return "无法获取PR差异信息", err
+	}
+
+	return string(output), nil
+}
+
 // CreateBranch 创建新分支
 func (gs *GitService) CreateBranch(repoPath, branchName string) error {
 	log.Printf("创建分支: %s", branchName)
@@ -262,13 +312,13 @@ func (gs *GitService) Push(repoPath, branchName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// 简单的推送命令，使用环境变量中的代理设置
+	// 简单的推送命令
 	cmd := exec.CommandContext(ctx, "git", "-C", repoPath,
 		"-c", "http.sslVerify=false",
 		"-c", "http.postBuffer=1048576000",
 		"push", "-u", "origin", branchName)
 
-	// 继承环境变量（包括代理设置）
+	// 继承环境变量
 	cmd.Env = append(os.Environ(),
 		"GIT_HTTP_TIMEOUT=90",
 		"GIT_HTTP_MAX_RETRIES=3")
@@ -304,6 +354,22 @@ func (gs *GitService) GetStatus(repoPath string) (string, error) {
 	}
 
 	return string(output), nil
+}
+
+// GetModifiedFiles 获取修改的文件列表
+func (gs *GitService) GetModifiedFiles(repoPath string) ([]string, error) {
+	cmd := exec.Command("git", "-C", repoPath, "diff", "--cached", "--name-only")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("获取修改文件列表失败: %v", err)
+	}
+
+	files := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(files) == 1 && files[0] == "" {
+		return []string{}, nil
+	}
+
+	return files, nil
 }
 
 // ConfigureGit 配置Git用户信息
@@ -437,38 +503,38 @@ func (gs *GitService) DeleteFile(repoPath, filePath string) error {
 }
 
 // testNetworkConnection 测试网络连接
-func (gs *GitService) testNetworkConnection() error {
-	// 测试DNS解析
-	log.Printf("测试DNS解析...")
-	pingCmd := exec.Command("ping", "-c", "1", "github.com")
-	pingCmd.Stdout = os.Stdout
-	pingCmd.Stderr = os.Stderr
-	if err := pingCmd.Run(); err != nil {
-		return fmt.Errorf("ping github.com 失败: %v", err)
-	}
+// func (gs *GitService) testNetworkConnection() error {
+// 	// 测试DNS解析
+// 	log.Printf("测试DNS解析...")
+// 	pingCmd := exec.Command("ping", "-c", "1", "github.com")
+// 	pingCmd.Stdout = os.Stdout
+// 	pingCmd.Stderr = os.Stderr
+// 	if err := pingCmd.Run(); err != nil {
+// 		return fmt.Errorf("ping github.com 失败: %v", err)
+// 	}
 
-	// 测试网络连接 - 尝试HTTP和HTTPS
-	log.Printf("测试HTTP连接...")
-	httpCmd := exec.Command("curl", "-I", "--connect-timeout", "10", "http://github.com")
-	httpCmd.Stdout = os.Stdout
-	httpCmd.Stderr = os.Stderr
-	if err := httpCmd.Run(); err != nil {
-		log.Printf("HTTP连接测试失败: %v", err)
-	} else {
-		log.Printf("HTTP连接测试成功")
-	}
+// 	// 测试网络连接 - 尝试HTTP和HTTPS
+// 	log.Printf("测试HTTP连接...")
+// 	httpCmd := exec.Command("curl", "-I", "--connect-timeout", "10", "http://github.com")
+// 	httpCmd.Stdout = os.Stdout
+// 	httpCmd.Stderr = os.Stderr
+// 	if err := httpCmd.Run(); err != nil {
+// 		log.Printf("HTTP连接测试失败: %v", err)
+// 	} else {
+// 		log.Printf("HTTP连接测试成功")
+// 	}
 
-	log.Printf("测试HTTPS连接(跳过SSL验证)...")
-	curlCmd := exec.Command("curl", "-I", "-k", "--http1.1", "--connect-timeout", "10", "https://github.com")
-	curlCmd.Stdout = os.Stdout
-	curlCmd.Stderr = os.Stderr
-	if err := curlCmd.Run(); err != nil {
-		log.Printf("HTTPS连接测试失败，但继续尝试Git克隆: %v", err)
-		// 即使网络测试失败，也继续尝试Git克隆
-	}
+// 	log.Printf("测试HTTPS连接(跳过SSL验证)...")
+// 	curlCmd := exec.Command("curl", "-I", "-k", "--http1.1", "--connect-timeout", "10", "https://github.com")
+// 	curlCmd.Stdout = os.Stdout
+// 	curlCmd.Stderr = os.Stderr
+// 	if err := curlCmd.Run(); err != nil {
+// 		log.Printf("HTTPS连接测试失败，但继续尝试Git克隆: %v", err)
+// 		// 即使网络测试失败，也继续尝试Git克隆
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // generateCacheKey 生成缓存键
 func (gs *GitService) generateCacheKey(repoURL, branch string) string {
@@ -557,7 +623,7 @@ func (gs *GitService) attemptClone(repoURL, branch, repoPath string) (string, er
 		"--single-branch",
 		repoURL, repoPath)
 
-	// 继承环境变量（包括代理设置）
+	// 继承环境变量
 	cmd.Env = append(os.Environ(),
 		"GIT_HTTP_TIMEOUT=60",
 		"GIT_HTTP_MAX_RETRIES=3",

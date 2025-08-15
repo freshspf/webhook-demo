@@ -106,29 +106,29 @@ func (h *WebhookHandler) verifySignature(signature string, payload []byte) bool 
 	return hmac.Equal([]byte(expectedSignature), []byte(calculatedSignature))
 }
 
-// verifySignatureConstantTime 使用常数时间比较的签名验证（推荐用于生产环境）
-func (h *WebhookHandler) verifySignatureConstantTime(signature string, payload []byte) bool {
-	if h.webhookSecret == "" {
-		return true
-	}
+// // verifySignatureConstantTime 使用常数时间比较的签名验证（推荐用于生产环境）
+// func (h *WebhookHandler) verifySignatureConstantTime(signature string, payload []byte) bool {
+// 	if h.webhookSecret == "" {
+// 		return true
+// 	}
 
-	if signature == "" {
-		return false
-	}
+// 	if signature == "" {
+// 		return false
+// 	}
 
-	if !strings.HasPrefix(signature, "sha256=") {
-		return false
-	}
+// 	if !strings.HasPrefix(signature, "sha256=") {
+// 		return false
+// 	}
 
-	expectedSignature := strings.TrimPrefix(signature, "sha256=")
-	expectedBytes, err := hex.DecodeString(expectedSignature)
-	if err != nil {
-		return false
-	}
+// 	expectedSignature := strings.TrimPrefix(signature, "sha256=")
+// 	expectedBytes, err := hex.DecodeString(expectedSignature)
+// 	if err != nil {
+// 		return false
+// 	}
 
-	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
-	mac.Write(payload)
-	calculatedBytes := mac.Sum(nil)
+// 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
+// 	mac.Write(payload)
+// 	calculatedBytes := mac.Sum(nil)
 
-	return hmac.Equal(expectedBytes, calculatedBytes)
-}
+// 	return hmac.Equal(expectedBytes, calculatedBytes)
+// }

@@ -18,13 +18,14 @@ type GitHubEvent struct {
 
 // Repository 仓库信息
 type Repository struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
-	HTMLURL  string `json:"html_url"`
-	CloneURL string `json:"clone_url"`
-	SSHURL   string `json:"ssh_url"`
-	Owner    User   `json:"owner"`
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	HTMLURL       string `json:"html_url"`
+	CloneURL      string `json:"clone_url"`
+	SSHURL        string `json:"ssh_url"`
+	DefaultBranch string `json:"default_branch"`
+	Owner         User   `json:"owner"`
 }
 
 // User 用户信息
@@ -103,11 +104,12 @@ type IssuesEvent struct {
 
 // IssueCommentEvent Issue评论事件
 type IssueCommentEvent struct {
-	Action     string     `json:"action"`
-	Issue      Issue      `json:"issue"`
-	Comment    Comment    `json:"comment"`
-	Repository Repository `json:"repository"`
-	Sender     User       `json:"sender"`
+	Action      string       `json:"action"`
+	Issue       Issue        `json:"issue"`
+	Comment     Comment      `json:"comment"`
+	Repository  Repository   `json:"repository"`
+	Sender      User         `json:"sender"`
+	PullRequest *PullRequest `json:"pull_request,omitempty"` // PR相关的评论会包含这个字段
 }
 
 // PullRequestEvent Pull Request事件
@@ -124,6 +126,25 @@ type PullRequestReviewCommentEvent struct {
 	Action      string      `json:"action"`
 	PullRequest PullRequest `json:"pull_request"`
 	Comment     Comment     `json:"comment"`
+	Repository  Repository  `json:"repository"`
+	Sender      User        `json:"sender"`
+}
+
+// Review Pull Request Review信息
+type Review struct {
+	ID          int64     `json:"id"`
+	Body        string    `json:"body"`
+	State       string    `json:"state"` // "approved", "changes_requested", "commented"
+	User        User      `json:"user"`
+	HTMLURL     string    `json:"html_url"`
+	SubmittedAt time.Time `json:"submitted_at"`
+}
+
+// PullRequestReviewEvent PR Review事件
+type PullRequestReviewEvent struct {
+	Action      string      `json:"action"`
+	Review      Review      `json:"review"`
+	PullRequest PullRequest `json:"pull_request"`
 	Repository  Repository  `json:"repository"`
 	Sender      User        `json:"sender"`
 }

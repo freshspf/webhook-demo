@@ -1,7 +1,6 @@
 package services
 
 import (
-	"bufio"
 	"fmt"
 	"log"
 	"os"
@@ -42,17 +41,44 @@ func (ccs *ClaudeCodeCLIService) FixCode(problem string, codeContext string) (st
 	return ccs.callClaudeCodeCLI(prompt)
 }
 
+// Summarize 总结内容
+func (ccs *ClaudeCodeCLIService) Summarize(summaryPrompt string) (string, error) {
+	return ccs.callClaudeCodeCLI(summaryPrompt)
+}
+
+// SummarizeInRepo 在指定仓库目录中总结内容
+func (ccs *ClaudeCodeCLIService) SummarizeInRepo(summaryPrompt string, repoPath string) (string, error) {
+	return ccs.callClaudeCodeCLIInDir(summaryPrompt, repoPath)
+}
+
+// ReviewCode 代码审查
+func (ccs *ClaudeCodeCLIService) ReviewCode(reviewPrompt string, context string) (string, error) {
+	prompt := ccs.buildReviewPrompt(reviewPrompt, context)
+	return ccs.callClaudeCodeCLI(prompt)
+}
+
+// ReviewCodeInRepo 在指定仓库目录中进行代码审查
+func (ccs *ClaudeCodeCLIService) ReviewCodeInRepo(reviewPrompt string, repoPath string) (string, error) {
+	// 直接使用传入的reviewPrompt，不再调用buildReviewPrompt避免重复
+	return ccs.callClaudeCodeCLIInDir(reviewPrompt, repoPath)
+}
+
 // callClaudeCodeCLI 调用Claude Code CLI
 func (ccs *ClaudeCodeCLIService) callClaudeCodeCLI(prompt string) (string, error) {
+	return ccs.callClaudeCodeCLIInDir(prompt, "")
+}
+
+// callClaudeCodeCLIInDir 在指定目录中调用Claude Code CLI
+func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir string) (string, error) {
 	// 检查Claude Code CLI是否已安装
 	if !ccs.isClaudeCodeCLIInstalled() {
-		return "", fmt.Errorf("Claude Code CLI未安装，请先运行: npm install -g @anthropic-ai/claude-code")
+		return "", fmt.Errorf("claude Code CLI未安装，请先运行: npm install -g @anthropic-ai/claude-code")
 	}
 
 	// 构建命令参数
 	args := []string{}
 
-	// 使用打印模式（非交互）
+	// 使用非交互模式
 	args = append(args, "--print")
 
 	// 添加模型参数（如果指定）
@@ -60,10 +86,9 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLI(prompt string) (string, error
 		args = append(args, "--model", ccs.config.Model)
 	}
 
-	// 添加提示词作为参数
-	args = append(args, prompt)
-
-	log.Printf("调用Claude Code CLI，模型: %s, BaseURL: %s", ccs.config.Model, ccs.config.BaseURL)
+	log.Printf("调用Claude Code CLI，模型: %s, BaseURL: %s",
+		ccs.config.Model, ccs.config.BaseURL)
+	log.Printf("提示词长度: %d 字符", len(prompt))
 
 	// 设置环境变量
 	env := os.Environ()
@@ -73,96 +98,49 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLI(prompt string) (string, error
 	if ccs.config.BaseURL != "" {
 		env = append(env, "ANTHROPIC_BASE_URL="+ccs.config.BaseURL)
 	}
+	// 禁用非必要流量以提高性能
+	env = append(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
 
-	// 在Clash规则模式下，优先使用NO_PROXY设置
-	// 这样既兼容全局代理，也兼容规则模式
-	env = append(env, "NO_PROXY=cc.qiniu.com,qiniu.com")
-	env = append(env, "no_proxy=cc.qiniu.com,qiniu.com")
-
-	// 添加调试信息
-	log.Printf("设置环境变量: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s",
+	log.Printf("设置环境变量: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		ccs.maskAPIKey(ccs.config.APIKey), ccs.config.BaseURL)
-	log.Printf("子进程代理环境: HTTP_PROXY=%t, HTTPS_PROXY=%t, ALL_PROXY=%t, NO_PROXY=%t",
-		strings.Contains(strings.Join(env, " "), "HTTP_PROXY"),
-		strings.Contains(strings.Join(env, " "), "HTTPS_PROXY"),
-		strings.Contains(strings.Join(env, " "), "ALL_PROXY"),
-		strings.Contains(strings.Join(env, " "), "NO_PROXY"))
+	log.Printf("执行命令: claude %v", args)
 
-	// 执行命令
+	// 执行命令，使用stdin传递提示词
 	cmd := exec.Command("claude", args...)
 	cmd.Env = env
 
-	// 使用管道来处理输入输出
-	stdout, err := cmd.StdoutPipe()
+	// 设置工作目录
+	if workDir != "" {
+		cmd.Dir = workDir
+		log.Printf("设置Claude CLI工作目录: %s", workDir)
+	}
+
+	// 通过stdin传递提示词，避免命令行参数长度限制
+	cmd.Stdin = strings.NewReader(prompt)
+
+	// 在这里加个sleep，等待3秒钟
+	time.Sleep(3 * time.Second)
+
+	// 执行命令并获取输出
+	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("创建stdout管道失败: %v", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return "", fmt.Errorf("创建stderr管道失败: %v", err)
-	}
-
-	// 启动命令
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("启动Claude Code CLI失败: %v", err)
-	}
-
-	// 读取输出
-	var result strings.Builder
-	var errorOutput strings.Builder
-
-	// 读取stdout
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			result.WriteString(line + "\n")
+		// 如果是ExitError，可以获取stderr
+		if exitError, ok := err.(*exec.ExitError); ok {
+			stderr := string(exitError.Stderr)
+			log.Printf("Claude CLI stderr: %s", stderr)
+			log.Printf("Claude CLI exit code: %v", err)
+			return "", fmt.Errorf("claude Code CLI执行失败: %v, 错误输出: %s", err, stderr)
 		}
-	}()
-
-	// 读取stderr
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			line := scanner.Text()
-			errorOutput.WriteString(line + "\n")
-		}
-	}()
-
-	// 等待命令完成
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	// 设置超时
-	timeout := time.Duration(ccs.config.TimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 120 * time.Second // 默认2分钟超时
+		return "", fmt.Errorf("claude Code CLI执行失败: %v", err)
 	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			errMsg := errorOutput.String()
-			if errMsg != "" {
-				return "", fmt.Errorf("Claude Code CLI执行失败: %v, 错误输出: %s", err, errMsg)
-			}
-			return "", fmt.Errorf("Claude Code CLI执行失败: %v", err)
-		}
-	case <-time.After(timeout):
-		cmd.Process.Kill()
-		return "", fmt.Errorf("Claude Code CLI调用超时 (%v)", timeout)
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" {
+		return "", fmt.Errorf("claude Code CLI没有返回任何输出")
 	}
 
-	output := strings.TrimSpace(result.String())
-	if output == "" {
-		return "", fmt.Errorf("Claude Code CLI没有返回任何输出")
-	}
-
-	log.Printf("Claude Code CLI调用成功，输出长度: %d 字符", len(output))
-	return output, nil
+	log.Printf("Claude Code CLI调用成功，输出长度: %d 字符", len(outputStr))
+	return outputStr, nil
 }
 
 // isClaudeCodeCLIInstalled 检查Claude Code CLI是否已安装
@@ -218,6 +196,30 @@ func (ccs *ClaudeCodeCLIService) buildFixPrompt(problem string, codeContext stri
 		"3. 确保修复后的代码正确运行\n"+
 		"4. 添加必要的注释说明修复内容\n\n"+
 		"请修复代码:", problem, codeContext)
+}
+
+// buildReviewPrompt 构建代码审查提示
+func (ccs *ClaudeCodeCLIService) buildReviewPrompt(reviewPrompt string, context string) string {
+	return fmt.Sprintf("你是一个资深的代码审查专家，请对以下代码进行专业的审查：\n\n"+
+		"**审查需求:**\n"+
+		"%s\n\n"+
+		"**项目上下文:**\n"+
+		"%s\n\n"+
+		"**审查标准:**\n"+
+		"1. **代码质量:** 可读性、可维护性、代码结构\n"+
+		"2. **安全性:** 安全漏洞、输入验证、权限控制\n"+
+		"3. **性能:** 算法效率、资源使用、优化机会\n"+
+		"4. **最佳实践:** 设计模式、编码规范、架构原则\n"+
+		"5. **错误处理:** 异常处理、边界条件、容错机制\n"+
+		"6. **测试:** 测试覆盖度、测试质量\n"+
+		"7. **文档:** 代码注释、API文档\n\n"+
+		"**输出要求:**\n"+
+		"- 使用Markdown格式\n"+
+		"- 提供具体的代码位置和建议\n"+
+		"- 按严重程度分类问题（严重/中等/轻微）\n"+
+		"- 给出具体的改进建议和示例代码\n"+
+		"- 提供总体评分和改进建议\n\n"+
+		"请开始代码审查:", reviewPrompt, context)
 }
 
 // maskAPIKey 遮盖API密钥用于日志显示
