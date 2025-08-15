@@ -1,249 +1,314 @@
-# GitHub Webhook Demo
+# 🤖 GitHub AI Webhook Demo
 
-这是一个使用Go语言实现的GitHub Webhook处理演示项目，展示了如何接收和处理GitHub事件，实现类似CodeAgent的自动化工作流。
+一个基于 **Claude Code CLI** 的智能GitHub Webhook处理系统，实现类似CodeAgent的自动化AI开发工作流。通过简单的Issue评论即可触发AI自动生成代码、修复问题、代码审查等功能。
 
-> 🚀 **最新更新**: 项目已迁移到Claude Code CLI，提供更稳定和强大的AI开发体验！查看 [Claude Code CLI迁移指南](CLAUDE_CODE_CLI_MIGRATION.md) 了解详情。
+> 🚀 **最新版本**: 已全面迁移到Claude Code CLI，提供更稳定、功能更强大的AI开发体验！
 
-## 🎯 功能特性
+## ✨ 核心功能
 
-- ✅ **GitHub Webhook接收**: 监听GitHub仓库事件
-- 🔐 **签名验证**: HMAC-SHA256签名验证确保安全性
-- 🎭 **事件分发**: 智能分发不同类型的GitHub事件
-- 🤖 **命令解析**: 支持 `/code`、`/continue`、`/fix`、`/help` 等命令
-- 📝 **自动回复**: 在Issue和PR中自动创建响应评论
-- 🛡️ **优雅关闭**: 支持信号处理和优雅关闭
-- 📊 **健康检查**: 提供健康检查端点
+### 🎯 智能命令系统
+- **`/code <需求>`** - AI自动分析需求并生成完整代码实现
+- **`/continue [说明]`** - 基于上下文继续开发功能  
+- **`/fix <问题>`** - 智能分析并修复代码问题
+- **`/review [范围]`** - 专业级代码审查和建议
+- **`/help`** - 显示完整命令帮助
 
-## 🏗️ 项目结构
+### 🔄 完整自动化流程
+1. **智能感知** - 监听GitHub Issue/PR评论中的命令
+2. **仓库克隆** - 自动克隆目标仓库到工作空间
+3. **AI分析** - 使用Claude Code CLI深度分析项目结构和需求
+4. **代码生成** - 实际创建/修改项目文件
+5. **分支管理** - 自动创建功能分支并提交修改
+6. **远程推送** - 将代码推送到GitHub仓库
+7. **PR创建** - 自动创建Pull Request（需要协作者权限）
+8. **智能回复** - 在Issue中提供详细的处理报告
+
+### 🛡️ 企业级特性
+- **签名验证** - HMAC-SHA256确保Webhook安全性
+- **权限控制** - 精细化的AI工具权限管理
+- **错误恢复** - 完善的重试机制和错误处理
+- **日志追踪** - 详细的操作日志和调试信息
+- **优雅关闭** - 支持信号处理和资源清理
+
+## 🏗️ 技术架构
 
 ```
 webhook-demo/
-├── main.go                           # 主程序入口
-├── go.mod                           # Go模块文件
-├── config.env.example               # 环境变量配置示例
-├── README.md                        # 说明文档
-└── internal/
-    ├── config/
-    │   └── config.go                # 配置管理
-    ├── handlers/
-    │   └── webhook.go               # Webhook处理器
-    ├── middleware/
-    │   └── cors.go                  # CORS中间件
-    ├── models/
-    │   └── github.go                # GitHub事件模型
-    └── services/
-        ├── github.go                # GitHub API服务
-        ├── claude_code_cli.go       # Claude Code CLI服务
-        ├── gemini.go                # Gemini AI服务 (已弃用)
-        ├── claude.go                # Claude API服务 (已弃用)
-        └── event_processor.go       # 事件处理器
+├── 🚀 main.go                          # 服务入口
+├── 📋 go.mod                           # Go模块管理
+├── ⚙️ config.env.example               # 环境配置模板
+├── 🔧 scripts/                         # 安装和维护脚本
+│   ├── install_claude_code_cli.sh      # Claude CLI自动安装
+│   ├── test_auto_fix.sh               # 功能测试脚本
+│   └── ...
+├── 🐳 Dockerfile                       # 容器化部署
+├── 🔄 internal/
+│   ├── 🎛️ config/                      # 配置管理
+│   │   ├── config.go                  # 主配置
+│   │   └── git_config.go              # Git专项配置
+│   ├── 🌐 handlers/                    # HTTP处理器
+│   │   └── webhook.go                 # Webhook入口
+│   ├── 🔒 middleware/                  # 中间件
+│   │   └── cors.go                    # 跨域支持
+│   ├── 📊 models/                      # 数据模型
+│   │   └── github.go                  # GitHub事件结构
+│   └── ⚙️ services/                    # 核心服务
+│       ├── claude_code_cli.go         # Claude Code CLI集成 🔥
+│       ├── event_processor.go         # 事件处理引擎 🔥
+│       ├── git.go                     # Git操作服务 🔥
+│       ├── github.go                  # GitHub API集成
+│       └── commit_builder.go          # 提交消息构建
+└── 📚 docs/                           # 详细文档
+    ├── CLAUDE_CODE_CLI_MIGRATION.md   # 迁移指南
+    ├── AUTO_FIX_FEATURE.md           # 自动修复功能说明
+    └── ...
 ```
 
 ## 🚀 快速开始
 
-### 1. 环境准备
-
-确保已安装：
-- Go 1.21或更高版本
-- Node.js 18或更高版本（用于Claude Code CLI）
+### 1. 环境要求
 
 ```bash
+# 基础环境
+Go 1.21+        # 后端服务
+Node.js 18+     # Claude Code CLI依赖
+
+# 验证安装
 go version
 node --version
 ```
 
-### 2. 克隆并初始化项目
+### 2. 一键安装
 
 ```bash
-# 进入项目目录
+# 克隆项目
+git clone <your-repo-url>
 cd webhook-demo
 
-# 初始化Go模块
+# 自动安装Claude Code CLI
+./scripts/install_claude_code_cli.sh
+
+# 初始化Go依赖
 go mod tidy
 ```
 
-### 3. 配置环境变量
+### 3. 环境配置
 
 ```bash
-# 复制配置文件
+# 复制配置模板
 cp config.env.example .env
 
-# 编辑配置文件，填入你的GitHub Token和Webhook Secret
-# GITHUB_TOKEN: 在GitHub Settings > Developer settings > Personal access tokens创建
-# GITHUB_WEBHOOK_SECRET: 在仓库Webhook设置中配置的密钥
+# 编辑配置文件
+nano .env
+```
+
+**关键配置项：**
+```bash
+# GitHub集成
+GITHUB_TOKEN=ghp_xxxxxxxxxxxx          # GitHub访问令牌
+GITHUB_WEBHOOK_SECRET=your_secret       # Webhook验证密钥
+
+# Claude Code CLI (核心)
+CLAUDE_CODE_CLI_API_KEY=sk-ant-xxxx     # Anthropic API密钥
+CLAUDE_CODE_CLI_MODEL=claude-sonnet-4-20250514  # 推荐模型
+ANTHROPIC_BASE_URL=https://api.anthropic.com/   # API端点
+
+# Git配置
+GIT_WORK_DIR=/tmp/webhook-demo          # 工作目录
+GIT_USER_NAME=AI-CodeAgent              # 提交用户名
+GIT_USER_EMAIL=ai@yourcompany.com       # 提交邮箱
 ```
 
 ### 4. 启动服务
 
 ```bash
-# 设置环境变量并启动
-source .env
-go run main.go
+# 开发模式
+source .env && go run main.go
+
+# 或使用提供的脚本
+./start.sh
 ```
 
-服务启动后会监听在 `http://localhost:8080`
+服务启动后监听：`http://localhost:8088`
 
-### 5. 配置GitHub Webhook
+### 5. GitHub Webhook配置
 
-在你的GitHub仓库中设置Webhook：
+在目标仓库中设置Webhook：
 
-1. 进入仓库 Settings > Webhooks
-2. 点击 "Add webhook"
-3. 配置以下信息：
-   - **Payload URL**: `http://your-server:8080/webhook`
-   - **Content type**: `application/json`
-   - **Secret**: 与环境变量 `GITHUB_WEBHOOK_SECRET` 相同
-   - **Events**: 选择需要的事件（建议选择 Issues, Issue comments, Pull requests）
+1. **Settings** → **Webhooks** → **Add webhook**
+2. 配置信息：
+   - **Payload URL**: `http://your-domain:8088/webhook`
+   - **Content type**: `application/json`  
+   - **Secret**: 与 `GITHUB_WEBHOOK_SECRET` 一致
+   - **Events**: 勾选 `Issues` 和 `Issue comments`
 
-## 📋 支持的命令
+## 💡 使用示例
 
-在Issue或PR评论中使用以下命令：
-
-- `/code <需求描述>` - 生成代码实现指定功能
-- `/continue [说明]` - 继续当前的开发任务  
-- `/fix <问题描述>` - 修复指定的代码问题
-- `/help` - 显示帮助信息
-
-### 使用示例
-
+### 代码生成
 ```
-/code 实现用户登录功能
-/continue 添加错误处理
-/fix 修复空指针异常
-/help
+/code 创建一个用户登录系统，包括JWT认证、密码加密和数据库存储
 ```
 
-## 🔄 工作流程
-
-1. **接收事件**: GitHub发送Webhook事件到服务器
-2. **验证签名**: 使用HMAC-SHA256验证请求来源
-3. **解析事件**: 根据事件类型解析JSON payload
-4. **处理命令**: 从Issue/PR评论中提取命令
-5. **执行操作**: 根据命令类型执行相应的处理逻辑
-6. **响应结果**: 在GitHub界面创建回复评论
-
-## 🛠️ API端点
-
-- `GET /` - API信息
-- `GET /health` - 健康检查
-- `POST /webhook` - GitHub Webhook端点
-
-### 健康检查示例
-
-```bash
-curl http://localhost:8080/health
+### 功能扩展  
+```
+/continue 为登录系统添加双因子认证和记住我功能
 ```
 
-响应：
-```json
-{
-  "status": "ok",
-  "timestamp": 1234567890
-}
+### 问题修复
+```
+/fix 修复用户登录时的空指针异常，加强输入验证
 ```
 
-## 🔧 扩展开发
+### 代码审查
+```
+/review 安全性审查 - 重点检查身份验证和数据验证逻辑
+```
 
-### 添加新的事件处理器
+## 🔧 高级配置
 
-在 `internal/services/event_processor.go` 中添加新的事件处理方法：
+### AI工具权限管理
+
+项目采用精细化权限控制，确保安全性：
 
 ```go
-func (ep *EventProcessor) handleCustomEvent(event *models.GitHubEvent) error {
-    // 自定义事件处理逻辑
-    return nil
-}
+// 允许的AI工具
+--allowedTools: "Edit,MultiEdit,Write,NotebookEdit,WebSearch,WebFetch"
+
+// 禁用危险工具  
+--disallowedTools: "Bash"
 ```
 
-### 添加新的命令
-
-在 `executeCommand` 方法中添加新的命令处理：
-
-```go
-case "newcommand":
-    return ep.handleNewCommand(command, ctx)
-```
-
-### 自定义GitHub API调用
-
-扩展 `internal/services/github.go` 添加更多GitHub API调用方法。
-
-## 🐳 Docker部署
-
-创建 `Dockerfile`:
-
-```dockerfile
-FROM golang:1.21-alpine AS builder
-
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY . .
-RUN go build -o webhook-demo main.go
-
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-WORKDIR /root/
-
-COPY --from=builder /app/webhook-demo .
-
-EXPOSE 8080
-CMD ["./webhook-demo"]
-```
-
-构建和运行：
+### 自动化环境变量
 
 ```bash
-docker build -t webhook-demo .
-docker run -p 8080:8080 --env-file .env webhook-demo
+CLAUDE_CODE_AUTO_APPROVE=true          # 自动确认操作
+CLAUDE_CODE_NO_INTERACTIVE=true        # 禁用交互模式
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=true  # 优化性能
 ```
 
-## 🔒 安全考虑
+### Git工作流配置
 
-1. **签名验证**: 始终验证GitHub Webhook签名
-2. **环境变量**: 敏感信息存储在环境变量中
-3. **HTTPS**: 生产环境建议使用HTTPS
-4. **访问控制**: 限制访问来源IP（如需要）
+- **分支命名**: `auto-fix-issue-{number}-{timestamp}`
+- **提交规范**: 遵循Conventional Commits
+- **文件限制**: 最大1MB，支持多种编程语言
 
-## 📝 日志记录
+## 🐳 生产部署
 
-服务会输出详细的日志信息，包括：
+### Docker部署
 
-- 接收到的事件类型和内容
-- 签名验证结果
-- 命令解析和执行过程
-- GitHub API调用结果
-- 错误信息和异常处理
+```bash
+# 构建镜像
+docker build -t github-ai-webhook .
 
-## 🔍 故障排除
+# 运行容器  
+docker run -d \
+  --name ai-webhook \
+  -p 8088:8088 \
+  --env-file .env \
+  github-ai-webhook
+```
 
-### 1. Webhook接收不到事件
+### Docker Compose (推荐)
 
-- 检查GitHub Webhook配置中的URL是否正确
-- 确认服务器能从外网访问
-- 查看GitHub Webhook的Delivery日志
+```yaml
+version: '3.8'
+services:
+  ai-webhook:
+    build: .
+    ports:
+      - "8088:8088"
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - /tmp/webhook-demo:/tmp/webhook-demo
+```
 
-### 2. 签名验证失败
+## 🔍 监控与调试
 
-- 检查 `GITHUB_WEBHOOK_SECRET` 环境变量
-- 确认GitHub Webhook设置中的Secret与环境变量一致
+### API端点
 
-### 3. GitHub API调用失败
+| 端点 | 方法 | 用途 |
+|------|------|------|
+| `/` | GET | 服务信息 |
+| `/health` | GET | 健康检查 |
+| `/webhook` | POST | GitHub事件接收 |
 
-- 检查 `GITHUB_TOKEN` 是否有效
-- 确认Token有足够的权限（repo, issues, pull_requests）
+### 日志监控
 
-## 📚 相关资源
+```bash
+# 查看实时日志
+tail -f webhook.log
 
-- [GitHub Webhooks文档](https://docs.github.com/en/developers/webhooks-and-events/webhooks)
-- [GitHub API文档](https://docs.github.com/en/rest)
-- [Gin Web框架](https://gin-gonic.com/)
+# 健康检查
+curl http://localhost:8088/health
+```
 
-## 🤝 贡献
+### 调试工具
 
-欢迎提交Issue和Pull Request来改进这个项目！
+```bash
+# 网络诊断
+./network_diagnosis.sh
 
-## 📄 许可证
+# 功能测试
+./scripts/test_auto_fix.sh
 
-MIT License
+# 服务状态
+./status.sh
+```
+
+## 🔒 安全最佳实践
+
+1. **网络安全**
+   - 使用HTTPS部署
+   - 配置防火墙规则
+   - 限制来源IP（可选）
+
+2. **密钥管理**
+   - 定期轮换API密钥
+   - 使用环境变量存储敏感信息
+   - 不在代码中硬编码密钥
+
+3. **权限控制**
+   - GitHub Token使用最小权限原则
+   - 定期审查仓库访问权限
+   - 监控AI工具使用情况
+
+## 📚 文档中心
+
+- 📖 [迁移指南](CLAUDE_CODE_CLI_MIGRATION.md) - Claude Code CLI迁移详情
+- 🤖 [自动修复功能](AUTO_FIX_FEATURE.md) - AI自动修复工作流程
+- 🔧 [服务管理](SERVICE_MANAGEMENT.md) - 服务启停和维护
+- 🚀 [快速开始](QUICK_START.md) - 详细安装和配置步骤
+
+## ⚡ 性能优化
+
+- **并发处理** - 支持多个Webhook事件并行处理
+- **缓存机制** - 仓库克隆缓存，减少网络开销
+- **超时控制** - 可配置的请求超时和重试策略
+- **资源限制** - 文件大小限制和内存使用优化
+
+## 🤝 贡献指南
+
+1. Fork项目仓库
+2. 创建功能分支: `git checkout -b feature/amazing-feature`
+3. 提交更改: `git commit -m 'feat: add amazing feature'`
+4. 推送分支: `git push origin feature/amazing-feature`
+5. 创建Pull Request
+
+## 📄 开源许可
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+## 🌟 致谢
+
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) - 强大的AI代码助手
+- [Gin Web Framework](https://gin-gonic.com/) - 高性能Go Web框架
+- [GitHub API](https://docs.github.com/en/rest) - 完善的仓库管理API
+
+---
+
+⭐ 如果这个项目对你有帮助，请给个Star支持一下！
+
+🐛 遇到问题？[提交Issue](https://github.com/your-repo/issues)  
+💬 交流讨论？[参与Discussions](https://github.com/your-repo/discussions)
