@@ -1062,18 +1062,11 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 	}
 
 	// 直接在仓库目录中调用Claude Code CLI进行代码修改
-	modificationPrompt := fmt.Sprintf(`请根据以下需求修改代码：
+	modificationPrompt := fmt.Sprintf(`我需要你为我的项目实现一个功能：%s
 
-**需求：**
 %s
 
-**描述：**
-%s
-
-**说明：**
-- 请直接修改需要的文件
-- 确保代码可以正常运行
-- 遵循最佳实践`, event.Issue.Title, event.Issue.Body)
+请创建必要的文件来实现这个功能。使用适当的编程语言（HTML/CSS/JavaScript、Python、Go等），确保代码完整可运行。`, event.Issue.Title, event.Issue.Body)
 
 	modificationResult, err := ep.claudeCodeService.GenerateCodeInRepo(modificationPrompt, repoPath)
 	if err != nil {
@@ -1084,6 +1077,17 @@ func (ep *EventProcessor) autoAnalyzeAndModify(event *models.IssuesEvent) error 
 			Issue:      &event.Issue,
 			User:       event.Sender,
 		}, errorMsg)
+	}
+
+	// 调试：检查工作目录的文件变化
+	log.Printf("Claude CLI执行后检查文件状态...")
+	if status, err := ep.gitService.GetStatus(repoPath); err == nil {
+		log.Printf("Git状态: %s", status)
+	}
+	
+	// 检查是否有新文件或修改的文件
+	if files, err := ep.gitService.ListFiles(repoPath, "."); err == nil {
+		log.Printf("当前目录文件数量: %d", len(files))
 	}
 
 	// 提交修改到仓库
@@ -1281,15 +1285,16 @@ func (ep *EventProcessor) commitAndPushChanges(repoPath string, event *models.Gi
 	}
 
 	// 检查是否有修改
-	hasChanges, err := ep.gitService.HasChanges(repoPath)
-	if err != nil {
-		return "", fmt.Errorf("检查修改状态失败: %v", err)
-	}
+	// hasChanges, err := ep.gitService.HasChanges(repoPath)
 
-	if !hasChanges {
-		log.Printf("没有检测到代码修改，跳过提交")
-		return "没有检测到代码修改", nil
-	}
+	// if err != nil {
+	// 	return "", fmt.Errorf("检查修改状态失败: %v", err)
+	// }
+
+	// if !hasChanges {
+	// 	log.Printf("没有检测到代码修改，跳过提交")
+	// 	return "没有检测到代码修改", nil
+	// }
 
 	// 获取修改的文件列表
 	modifiedFiles, err := ep.gitService.GetModifiedFiles(repoPath)
@@ -1367,6 +1372,11 @@ func (ep *EventProcessor) createPullRequest(event *models.GitHubEvent, branchNam
 		if strings.Contains(err.Error(), "A pull request already exists") {
 			log.Printf("Pull Request 已存在，跳过创建: %s", branchName)
 			return "🔗 Pull Request 已存在", nil
+		}
+		// 如果是权限错误，提供友好的提示
+		if strings.Contains(err.Error(), "must be a collaborator") || strings.Contains(err.Error(), "422") {
+			log.Printf("创建PR权限不足: %v", err)
+			return fmt.Sprintf("📝 代码修改已推送到分支: %s\n⚠️  需要仓库协作者权限才能创建PR", branchName), nil
 		}
 		return "", err
 	}

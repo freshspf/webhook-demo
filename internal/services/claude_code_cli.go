@@ -73,22 +73,22 @@ func (ccs *ClaudeCodeCLIService) GenerateCodeInRepo(prompt string, repoPath stri
 // callClaudeCodeCLIInDirWithRetry 带重试的CLI调用
 func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDirWithRetry(prompt string, workDir string, maxRetries int) (string, error) {
 	var lastErr error
-	
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			log.Printf("Claude CLI调用失败，进行第%d次重试", attempt)
 			time.Sleep(time.Duration(attempt) * 2 * time.Second) // 逐渐增加延迟
 		}
-		
+
 		result, err := ccs.callClaudeCodeCLIInDir(prompt, workDir)
 		if err == nil {
 			return result, nil
 		}
-		
+
 		lastErr = err
 		log.Printf("第%d次尝试失败: %v", attempt+1, err)
 	}
-	
+
 	return "", fmt.Errorf("Claude CLI调用在%d次尝试后仍然失败: %v", maxRetries+1, lastErr)
 }
 
@@ -107,8 +107,9 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir s
 	// 构建命令参数
 	args := []string{}
 
-	// 使用非交互模式
-	args = append(args, "--print")
+	// 预授权工具权限：允许文件操作和联网搜索，但禁用命令执行
+	args = append(args, "--allowedTools", "Edit,MultiEdit,Write,NotebookEdit,WebSearch,WebFetch")
+	args = append(args, "--disallowedTools", "Bash")
 
 	// 添加详细输出参数（用于调试）
 	args = append(args, "--verbose")
@@ -130,11 +131,17 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir s
 	if ccs.config.BaseURL != "" {
 		env = append(env, "ANTHROPIC_BASE_URL="+ccs.config.BaseURL)
 	}
-	// 禁用非必要流量以提高性能
-	env = append(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
 
-	log.Printf("设置环境变量: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+	// 自动化流程配置
+	env = append(env, "CLAUDE_CODE_AUTO_APPROVE=true")                    // 自动确认所有操作
+	env = append(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=true")    // 禁用非必要流量以提高性能
+	env = append(env, "CLAUDE_CODE_ALLOW_TOOLS=writeFile,readFile,glob")  // 明确允许文件操作工具
+	env = append(env, "CLAUDE_CODE_NO_INTERACTIVE=true")                  // 禁用交互模式
+	// env = append(env, "CLAUDE_CODE_DISALLOW_TOOLS=exec")               // 只禁用exec，允许writeFile和其他文件操作
+
+	log.Printf("设置环境变量: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s",
 		ccs.maskAPIKey(ccs.config.APIKey), ccs.config.BaseURL)
+	log.Printf("权限配置: 允许文件操作+联网搜索，禁用Bash命令")
 	log.Printf("执行命令: claude %v", args)
 
 	// 创建带超时的context - 对于代码生成任务使用更长的超时时间
@@ -170,6 +177,8 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir s
 	startTime := time.Now()
 
 	// 执行命令
+	log.Printf("开始执行Claude CLI命令")
+
 	err := cmd.Run()
 	duration := time.Since(startTime)
 
@@ -205,13 +214,19 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir s
 		return "", fmt.Errorf("claude Code CLI没有返回任何输出")
 	}
 
-	// 检查输出长度，如果太短可能是错误消息
-	if len(outputStr) < 50 {
-		log.Printf("Claude CLI输出可能是错误消息（长度: %d）: %s", len(outputStr), outputStr)
-		// 如果是明显的错误信息，直接返回错误
-		if strings.Contains(strings.ToLower(outputStr), "error") {
-			return "", fmt.Errorf("claude Code CLI执行出错: %s", outputStr)
-		}
+	// 检查是否有明显的错误信息
+	if strings.Contains(strings.ToLower(outputStr), "error") ||
+		strings.Contains(strings.ToLower(outputStr), "failed") ||
+		strings.Contains(strings.ToLower(outputStr), "permission denied") {
+		log.Printf("Claude CLI执行出错: %s", outputStr)
+		return "", fmt.Errorf("claude Code CLI执行出错: %s", outputStr)
+	}
+
+	// 记录输出信息
+	if len(outputStr) < 200 {
+		log.Printf("Claude CLI输出: %s", outputStr)
+	} else {
+		log.Printf("Claude CLI输出长度: %d 字符, 预览: %s...", len(outputStr), outputStr[:200])
 	}
 
 	log.Printf("Claude Code CLI调用成功，输出长度: %d 字符", len(outputStr))
