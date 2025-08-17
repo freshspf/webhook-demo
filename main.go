@@ -24,7 +24,7 @@ func main() {
 	githubService := services.NewGitHubService(cfg.GitHub.Token)
 	claudeCodeService := services.NewClaudeCodeCLIService(&cfg.ClaudeCodeCLI)
 	gitConfig := config.LoadGitConfig()
-	gitService := services.NewGitService(gitConfig.WorkDir)
+	gitService := services.NewGitServiceWithToken(gitConfig.WorkDir, cfg.GitHub.Token)
 	eventProcessor := services.NewEventProcessor(githubService, claudeCodeService, gitService)
 
 	// 初始化处理器

@@ -21,6 +21,8 @@ type GitService struct {
 	cacheMutex   sync.RWMutex           // 缓存读写锁
 	lastCloneMap map[string]time.Time   // 记录每个仓库的最后克隆时间
 	cloneMutex   sync.RWMutex           // 克隆时间锁
+	githubToken  string                 // GitHub Token
+	botUsername  string                 // Bot用户名
 }
 
 // CachedRepo 缓存的仓库信息
@@ -47,6 +49,28 @@ func NewGitService(workDir string) *GitService {
 		workDir:      workDir,
 		repoCache:    make(map[string]*CachedRepo),
 		lastCloneMap: make(map[string]time.Time),
+		githubToken:  os.Getenv("GITHUB_TOKEN"),
+		botUsername:  getBotUsernameFromToken(),
+	}
+}
+
+// NewGitServiceWithToken 创建新的Git服务（带token）
+func NewGitServiceWithToken(workDir, githubToken string) *GitService {
+	if workDir == "" {
+		workDir = "/tmp/webhook-demo"
+	}
+
+	// 确保工作目录存在
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		log.Printf("创建工作目录失败: %v", err)
+	}
+
+	return &GitService{
+		workDir:      workDir,
+		repoCache:    make(map[string]*CachedRepo),
+		lastCloneMap: make(map[string]time.Time),
+		githubToken:  githubToken,
+		botUsername:  getBotUsernameFromToken(),
 	}
 }
 
@@ -307,6 +331,12 @@ func (gs *GitService) Commit(repoPath, message string) error {
 // Push 推送到远程仓库
 func (gs *GitService) Push(repoPath, branchName string) error {
 	log.Printf("推送分支: %s", branchName)
+
+	// 设置远程URL包含token
+	if err := gs.setupRemoteWithToken(repoPath); err != nil {
+		log.Printf("设置远程URL失败: %v", err)
+		return fmt.Errorf("设置远程URL失败: %v", err)
+	}
 
 	// 设置超时
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -614,6 +644,9 @@ func (gs *GitService) attemptClone(repoURL, branch, repoPath string) (string, er
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
+	// 构建包含token的URL
+	authURL := gs.buildAuthenticatedURL(repoURL)
+	
 	// 简单的浅克隆命令
 	cmd := exec.CommandContext(ctx, "git", "clone",
 		"-c", "http.sslVerify=false",
@@ -621,7 +654,7 @@ func (gs *GitService) attemptClone(repoURL, branch, repoPath string) (string, er
 		"-b", branch,
 		"--depth", "1",
 		"--single-branch",
-		repoURL, repoPath)
+		authURL, repoPath)
 
 	// 继承环境变量
 	cmd.Env = append(os.Environ(),
@@ -678,4 +711,91 @@ func (gs *GitService) GetCacheStatus() map[string]interface{} {
 	}
 
 	return status
+}
+
+// buildAuthenticatedURL 构建包含token的认证URL
+func (gs *GitService) buildAuthenticatedURL(repoURL string) string {
+	if gs.githubToken == "" {
+		log.Printf("警告: GitHub token未配置，使用原始URL")
+		return repoURL
+	}
+
+	// 如果URL已经包含认证信息，直接返回
+	if strings.Contains(repoURL, "@") {
+		return repoURL
+	}
+
+	// 转换https://github.com/user/repo.git 为 https://token@github.com/user/repo.git
+	if strings.HasPrefix(repoURL, "https://github.com/") {
+		// 构建认证URL: https://username:token@github.com/user/repo.git
+		username := gs.botUsername
+		if username == "" {
+			username = "bot" // 默认用户名
+		}
+		authURL := strings.Replace(repoURL, "https://github.com/", fmt.Sprintf("https://%s:%s@github.com/", username, gs.githubToken), 1)
+		log.Printf("构建认证URL: %s -> %s", maskURL(repoURL), maskURL(authURL))
+		return authURL
+	}
+
+	// 如果不是GitHub URL，返回原始URL
+	log.Printf("非GitHub URL，使用原始URL: %s", repoURL)
+	return repoURL
+}
+
+// setupRemoteWithToken 设置远程仓库URL包含token
+func (gs *GitService) setupRemoteWithToken(repoPath string) error {
+	// 获取当前远程URL
+	cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("获取远程URL失败: %v", err)
+	}
+
+	currentURL := strings.TrimSpace(string(output))
+	log.Printf("当前远程URL: %s", maskURL(currentURL))
+
+	// 构建认证URL
+	authURL := gs.buildAuthenticatedURL(currentURL)
+
+	// 如果URL相同，无需更新
+	if authURL == currentURL {
+		log.Printf("远程URL已包含认证信息，无需更新")
+		return nil
+	}
+
+	// 更新远程URL
+	cmd = exec.Command("git", "-C", repoPath, "remote", "set-url", "origin", authURL)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("设置远程URL失败: %v", err)
+	}
+
+	log.Printf("远程URL已更新为包含认证信息")
+	return nil
+}
+
+// getBotUsernameFromToken 从token获取bot用户名（简化版本）
+func getBotUsernameFromToken() string {
+	// 对于GitHub HTTP认证，用户名可以是任意值
+	// 重要的是token，所以我们使用一个通用的用户名
+	return "bot"
+}
+
+// maskURL 遮盖URL中的敏感信息用于日志显示
+func maskURL(url string) string {
+	// 遮盖token信息
+	if strings.Contains(url, "@") {
+		parts := strings.Split(url, "@")
+		if len(parts) >= 2 {
+			// 遮盖认证部分
+			authPart := parts[0]
+			if strings.Contains(authPart, ":") {
+				authSplit := strings.Split(authPart, ":")
+				if len(authSplit) >= 3 { // https:username:token
+					maskedAuth := authSplit[0] + ":" + authSplit[1] + ":***"
+					return maskedAuth + "@" + strings.Join(parts[1:], "@")
+				}
+			}
+		}
+	}
+	return url
 }

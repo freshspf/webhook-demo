@@ -214,10 +214,13 @@ func (ccs *ClaudeCodeCLIService) callClaudeCodeCLIInDir(prompt string, workDir s
 		return "", fmt.Errorf("claude Code CLI没有返回任何输出")
 	}
 
-	// 检查是否有明显的错误信息
-	if strings.Contains(strings.ToLower(outputStr), "error") ||
-		strings.Contains(strings.ToLower(outputStr), "failed") ||
-		strings.Contains(strings.ToLower(outputStr), "permission denied") {
+	// 检查是否有明显的CLI执行错误信息（不检查内容中的error词汇）
+	lowerOutput := strings.ToLower(outputStr)
+	if strings.Contains(lowerOutput, "permission denied") ||
+		strings.Contains(lowerOutput, "command not found") ||
+		strings.Contains(lowerOutput, "authentication failed") ||
+		strings.HasPrefix(lowerOutput, "error:") ||
+		strings.HasPrefix(lowerOutput, "fatal:") {
 		log.Printf("Claude CLI执行出错: %s", outputStr)
 		return "", fmt.Errorf("claude Code CLI执行出错: %s", outputStr)
 	}
